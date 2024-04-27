@@ -1,0 +1,24 @@
+[
+	{
+		"domain": "domain.com",
+		"primary_ip": "1.1.1.1",
+		"secondary_ip": "1.2.3.4",
+		"email": "some_email@domain.com",
+		"api_key": "3233e2d23d23d2323d23d23d23d23d",
+		"zone_id": "d23223d23d4f1234334f34134f1134f",
+		"excluded_subdomains": [
+			"no-update"
+		]
+	},
+	{
+		"domain": "domain2.com",
+		"primary_ip": "1.1.1.1",
+		"secondary_ip": "1.2.3.4",
+		"email": "some_email@domain.com",
+		"api_key": "3233e2d23d23d2323d23d23d23d23d",
+		"zone_id": "d23223d23d4f1234334f34134f1134f",
+		"excluded_subdomains": [
+			"no-update-subdomain"
+		]
+	},
+]
