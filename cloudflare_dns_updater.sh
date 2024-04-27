@@ -76,7 +76,7 @@ update_cloudflare_dns() {
     for ((i = 0; i < records_count; i++)); do
         record_name=$(echo "$records_json" | jq -r ".result[$i].name")
         record_id=$(echo "$records_json" | jq -r ".result[$i].id")
-        subdomain_part="${record_name%.$domain}" # Extract the subdomain part
+        subdomain_part="${record_name%."$domain"}" # Extract the subdomain part
 
         # Check if the subdomain part is in the excluded subdomains
         if [[ ! " ${excluded_subdomains[@]} " =~ " $subdomain_part " ]]; then
