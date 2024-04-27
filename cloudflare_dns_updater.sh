@@ -136,15 +136,15 @@ main() {
         cache_file="$IP_CACHE_DIR/$domain"
         cached_ip=$(cat "$cache_file" 2>/dev/null || echo "")
 
+        # Start manage domain
+        echo -e "\033[34mProcessing domain: $domain\033[0m"
+
         printf "Cached IP %s for domain %s \n" "$cached_ip" "$domain"
         # Print each subdomain in the excluded_subdomains array
         printf "Excluded subdomains:\n"
         for subdomain in "${excluded_subdomains[@]}"; do
             printf " - %s\n" "$subdomain"
         done
-
-
-        echo -e "\033[34mProcessing domain: $domain\033[0m"
 
         # Check if domain is online first
         if check_domain_online "$domain"; then
@@ -171,7 +171,7 @@ main() {
                 fi
             fi
         else
-            printf "%s is offline. Changing failover IP...\n" "$domain"
+            echo -e "\033[31mError: $domain is offline. Changing failover IP...\033[0m"
             if check_ip_online "$primary_ip"; then
                 update_cloudflare_dns "$email" "$api_key" "$zone_id" "$domain" "$primary_ip" "${excluded_subdomains[@]}"
                 printf "Switched to primary IP %s for %s due to domain being offline.\n" "$primary_ip" "$domain"
@@ -179,7 +179,7 @@ main() {
                 update_cloudflare_dns "$email" "$api_key" "$zone_id" "$domain" "$secondary_ip" "${excluded_subdomains[@]}"
                 printf "Switched to secondary IP %s for %s due to primary IP failure.\n" "$secondary_ip" "$domain"
             else
-                printf "Both primary and secondary IPs for %s are offline. Urgent attention required!\n" "$domain"
+                echo -e "\033[33mCritical Error: Both primary and secondary IPs for $domain are offline. Urgent attention required!\033[0m"
             fi
         fi
 
