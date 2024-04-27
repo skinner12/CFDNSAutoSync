@@ -85,13 +85,15 @@ update_cloudflare_dns() {
         # Check if the subdomain part is in the excluded subdomains
         if [[ ! " ${excluded_subdomains[*]} " =~  $subdomain_part  ]]; then
             local update_response
-            # TODO: manage curl error
-            update_response=$(curl -s -X PUT "$CLOUDFLARE_API_ENDPOINT/zones/$zone_id/dns_records/$record_id" \
+            if ! update_response=$(curl -s -X PUT "$CLOUDFLARE_API_ENDPOINT/zones/$zone_id/dns_records/$record_id" \
                     -H "X-Auth-Email: $email" \
                     -H "X-Auth-Key: $api_key" \
                     -H "Content-Type: application/json" \
                     --data "{\"type\":\"A\",\"name\":\"$record_name\",\"content\":\"$new_ip\",\"ttl\":1,\"proxied\":true}" \
-                -w "%{http_code}")
+                    -w "%{http_code}"); then
+                echo "Failed to update dns due to network or curl error." >&2
+                return 1
+            fi
 
             # local update_response_code
             # update_response_code=$(echo "$update_response" | tail -n1)
