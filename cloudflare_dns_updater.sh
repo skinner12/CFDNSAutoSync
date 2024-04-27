@@ -144,10 +144,9 @@ main() {
         done
 
 
+        echo -e "\033[34mProcessing domain: $domain\033[0m"
 
         # Check if domain is online first
-
-
         if check_domain_online "$domain"; then
             printf "%s is online. Checking IP consistency...\n" "$domain"
             if [[ "$cached_ip" != "$primary_ip" ]]; then
