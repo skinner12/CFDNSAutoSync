@@ -79,7 +79,7 @@ update_cloudflare_dns() {
         subdomain_part="${record_name%."$domain"}" # Extract the subdomain part
 
         # Check if the subdomain part is in the excluded subdomains
-        if [[ ! " ${excluded_subdomains[@]} " =~ " $subdomain_part " ]]; then
+        if [[ ! " ${excluded_subdomains[*]} " =~  $subdomain_part  ]]; then
             local update_response
             update_response=$(curl -s -X PUT "$CLOUDFLARE_API_ENDPOINT/zones/$zone_id/dns_records/$record_id" \
                     -H "X-Auth-Email: $email" \
