@@ -48,14 +48,18 @@ update_cloudflare_dns() {
 
     # Fetch all DNS records
     local records_json
-    records_json=$(curl -s -X GET "$CLOUDFLARE_API_ENDPOINT/zones/$zone_id/dns_records?type=A" \
+
+    if ! records_json=$(curl -s -X GET "$CLOUDFLARE_API_ENDPOINT/zones/$zone_id/dns_records?type=A" \
             -H "X-Auth-Email: $email" \
             -H "X-Auth-Key: $api_key" \
-        -H "Content-Type: application/json")
-
-    # Check for curl command success
-    if [[ $? -ne 0 ]]; then
+            -H "Content-Type: application/json"); then
         echo "Failed to fetch DNS records due to a network or curl error." >&2
+        return 1
+    fi
+
+    # Check if the records_json is empty or not as expected
+    if [ -z "$records_json" ] || [[ "$records_json" == *'"result":[]'* ]]; then
+        echo "No DNS records found or empty response." >&2
         return 1
     fi
 
@@ -81,6 +85,7 @@ update_cloudflare_dns() {
         # Check if the subdomain part is in the excluded subdomains
         if [[ ! " ${excluded_subdomains[*]} " =~  $subdomain_part  ]]; then
             local update_response
+            # TODO: manage curl error
             update_response=$(curl -s -X PUT "$CLOUDFLARE_API_ENDPOINT/zones/$zone_id/dns_records/$record_id" \
                     -H "X-Auth-Email: $email" \
                     -H "X-Auth-Key: $api_key" \
