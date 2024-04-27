@@ -73,7 +73,7 @@ update_cloudflare_dns() {
 
     local records_count record_name record_id
     records_count=$(echo "$records_json" | jq '.result | length')
-    for ((i = 0; i < $records_count; i++)); do
+    for ((i = 0; i < records_count; i++)); do
         record_name=$(echo "$records_json" | jq -r ".result[$i].name")
         record_id=$(echo "$records_json" | jq -r ".result[$i].id")
         subdomain_part="${record_name%.$domain}" # Extract the subdomain part
