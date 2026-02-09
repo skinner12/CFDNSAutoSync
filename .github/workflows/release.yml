@@ -120,8 +120,12 @@ jobs:
         env:
           RELEASE_VERSION: ${{ steps.release_version.outputs.version }}
         run: |
-          git tag "v${RELEASE_VERSION}"
-          git push origin "v${RELEASE_VERSION}"
+          if git rev-parse "v${RELEASE_VERSION}" >/dev/null 2>&1; then
+            echo "Tag v${RELEASE_VERSION} already exists, skipping tag creation"
+          else
+            git tag "v${RELEASE_VERSION}"
+            git push origin "v${RELEASE_VERSION}"
+          fi
 
       - name: Make script executable
         if: steps.release_version.outputs.skip != 'true'
