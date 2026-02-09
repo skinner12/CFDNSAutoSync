@@ -5,6 +5,7 @@ VERSION="1.1.0"
 # Configuration defaults
 CONFIG_FILE="domain.json"
 CLOUDFLARE_API_ENDPOINT="https://api.cloudflare.com/client/v4"
+LOCK_FILE="${HOME}/.cloudflare_dns_updater/dns_updater.lock"
 CACHE_DIR="${HOME}/.cloudflare_dns_updater/cache"
 NOTIFICATION_CACHE_DIR="${HOME}/.cloudflare_dns_updater/notification_cache"
 LOG_FILE="${HOME}/.cloudflare_dns_updater/dns_updater.log"
@@ -597,4 +598,20 @@ parse_args() {
 }
 
 parse_args "$@"
+
+# Lock file to prevent overlapping runs
+if [[ -f "$LOCK_FILE" ]]; then
+    LOCK_PID=$(cat "$LOCK_FILE")
+    if kill -0 "$LOCK_PID" 2>/dev/null; then
+        echo "Another instance is already running (PID $LOCK_PID). Skipping."
+        exit 0
+    fi
+    # Stale lock file (process no longer running), remove it
+    rm -f "$LOCK_FILE"
+fi
+
+mkdir -p "$(dirname "$LOCK_FILE")"
+echo $$ > "$LOCK_FILE"
+trap 'rm -f "$LOCK_FILE"' EXIT
+
 main
