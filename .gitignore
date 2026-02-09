@@ -16,3 +16,6 @@
 ### Sensitive Data ###
 # Exclude JSON files that contain sensitive data
 *.json
+
+### Claude Code ###
+CLAUDE.md
