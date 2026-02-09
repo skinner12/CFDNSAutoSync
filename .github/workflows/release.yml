@@ -1,0 +1,67 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate tag matches VERSION
+        run: |
+          SCRIPT_VERSION=$(grep -oP '^VERSION="\K[^"]+' cloudflare_dns_updater.sh)
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          if [[ "$SCRIPT_VERSION" != "$TAG_VERSION" ]]; then
+            echo "ERROR: Tag $TAG_VERSION does not match script VERSION $SCRIPT_VERSION"
+            exit 1
+          fi
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          PREVIOUS_TAG=$(git tag --sort=-version:refname | head -2 | tail -1)
+          if [[ -z "$PREVIOUS_TAG" ]] || [[ "$PREVIOUS_TAG" == "$GITHUB_REF_NAME" ]]; then
+            CHANGELOG=$(git log --pretty=format:"- %s (%h)" HEAD)
+          else
+            CHANGELOG=$(git log --pretty=format:"- %s (%h)" "${PREVIOUS_TAG}..${GITHUB_REF_NAME}")
+          fi
+          {
+            echo "changelog<<EOF"
+            echo "$CHANGELOG"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Make script executable
+        run: chmod +x cloudflare_dns_updater.sh
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          body: |
+            ## What's Changed
+
+            ${{ steps.changelog.outputs.changelog }}
+
+            ## Installation
+
+            ```bash
+            curl -LO https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/cloudflare_dns_updater.sh
+            chmod +x cloudflare_dns_updater.sh
+            ```
+
+            ## Requirements
+
+            `jq`, `curl`, `bc`
+          files: |
+            cloudflare_dns_updater.sh
+            domain.json.example
