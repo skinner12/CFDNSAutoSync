@@ -1,0 +1,9 @@
+.git
+.github
+docs
+*.md
+*.json
+LICENSE
+CLAUDE.md
+.gitignore
+.dockerignore

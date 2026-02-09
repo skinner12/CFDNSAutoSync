@@ -1,0 +1,15 @@
+services:
+  dns-updater:
+    build: .
+    container_name: cloudflare-dns-updater
+    restart: unless-stopped
+    environment:
+      - CHECK_INTERVAL=300
+    volumes:
+      - ./domain.json:/app/domain.json:ro
+      - logs:/app/logs
+      - cache:/root/.cloudflare_dns_updater
+
+volumes:
+  logs:
+  cache:
