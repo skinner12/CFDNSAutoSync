@@ -74,8 +74,8 @@ send_telegram() {
     local config=$1 event_type=$2 domain=$3 old_ip=$4 new_ip=$5 reason=$6 timestamp=$7 hostname=$8
 
     local bot_token chat_id
-    bot_token=$(echo "$config" | jq -r '.notifications.channels.telegram.bot_token')
-    chat_id=$(echo "$config" | jq -r '.notifications.channels.telegram.chat_id')
+    bot_token=$(echo "$config" | jq -r '.channels.telegram.bot_token')
+    chat_id=$(echo "$config" | jq -r '.channels.telegram.chat_id')
 
     if [[ -z "$bot_token" ]] || [[ -z "$chat_id" ]] || [[ "$bot_token" == "null" ]] || [[ "$chat_id" == "null" ]]; then
         log_message "WARN" "Telegram notification skipped: missing bot_token or chat_id for $domain"
@@ -119,7 +119,7 @@ send_slack() {
     local config=$1 event_type=$2 domain=$3 old_ip=$4 new_ip=$5 reason=$6 timestamp=$7 hostname=$8
 
     local webhook_url
-    webhook_url=$(echo "$config" | jq -r '.notifications.channels.slack.webhook_url')
+    webhook_url=$(echo "$config" | jq -r '.channels.slack.webhook_url')
 
     if [[ -z "$webhook_url" ]] || [[ "$webhook_url" == "null" ]]; then
         log_message "WARN" "Slack notification skipped: missing webhook_url for $domain"
@@ -175,8 +175,8 @@ send_webhook() {
     local config=$1 event_type=$2 domain=$3 old_ip=$4 new_ip=$5 reason=$6 timestamp=$7 hostname=$8
 
     local url method
-    url=$(echo "$config" | jq -r '.notifications.channels.webhook.url')
-    method=$(echo "$config" | jq -r '.notifications.channels.webhook.method // "POST"')
+    url=$(echo "$config" | jq -r '.channels.webhook.url')
+    method=$(echo "$config" | jq -r '.channels.webhook.method // "POST"')
 
     if [[ -z "$url" ]] || [[ "$url" == "null" ]]; then
         log_message "WARN" "Webhook notification skipped: missing url for $domain"
@@ -208,34 +208,43 @@ send_webhook() {
     log_message "INFO" "Webhook notification sent for $domain ($event_type)"
 }
 
-# Notification dispatcher: checks config, cooldown, and fans out to enabled channels
+# Notification dispatcher: checks global config, per-domain override, cooldown, then fans out
 send_notification() {
-    local config=$1
-    local event_type=$2
-    local domain=$3
-    local old_ip=$4
-    local new_ip=$5
-    local reason=$6
+    local notif_config=$1
+    local domain_notif_enabled=$2
+    local event_type=$3
+    local domain=$4
+    local old_ip=$5
+    local new_ip=$6
+    local reason=$7
 
-    # Check if notifications are enabled
+    # Check if notifications are globally enabled
+    if [[ -z "$notif_config" ]] || [[ "$notif_config" == "null" ]]; then
+        return 0
+    fi
     local notif_enabled
-    notif_enabled=$(echo "$config" | jq -r '.notifications.enabled // false')
+    notif_enabled=$(echo "$notif_config" | jq -r '.enabled // false')
     if [[ "$notif_enabled" != "true" ]]; then
+        return 0
+    fi
+
+    # Per-domain override: domain can opt out with "notifications_enabled": false
+    if [[ "$domain_notif_enabled" == "false" ]]; then
         return 0
     fi
 
     # Check if this event type is in the configured events list
     local event_match
-    event_match=$(echo "$config" | jq -r \
+    event_match=$(echo "$notif_config" | jq -r \
         --arg evt "$event_type" \
-        '.notifications.events // ["failover","failback","both_offline"] | index($evt) // empty')
+        '.events // ["failover","failback","both_offline"] | index($evt) // empty')
     if [[ -z "$event_match" ]]; then
         return 0
     fi
 
     # Check cooldown
     local cooldown_minutes
-    cooldown_minutes=$(echo "$config" | jq -r '.notifications.cooldown_minutes // empty')
+    cooldown_minutes=$(echo "$notif_config" | jq -r '.cooldown_minutes // empty')
     cooldown_minutes=${cooldown_minutes:-$DEFAULT_NOTIFICATION_COOLDOWN}
     if ! should_send_notification "$domain" "$event_type" "$cooldown_minutes"; then
         return 0
@@ -246,16 +255,16 @@ send_notification() {
     hostname=$(hostname -s 2>/dev/null || echo "unknown")
 
     # Fan out to enabled channels (fire-and-forget, never block DNS updates)
-    if [[ "$(echo "$config" | jq -r '.notifications.channels.telegram.enabled // false')" == "true" ]]; then
-        send_telegram "$config" "$event_type" "$domain" "$old_ip" "$new_ip" "$reason" "$timestamp" "$hostname"
+    if [[ "$(echo "$notif_config" | jq -r '.channels.telegram.enabled // false')" == "true" ]]; then
+        send_telegram "$notif_config" "$event_type" "$domain" "$old_ip" "$new_ip" "$reason" "$timestamp" "$hostname"
     fi
 
-    if [[ "$(echo "$config" | jq -r '.notifications.channels.slack.enabled // false')" == "true" ]]; then
-        send_slack "$config" "$event_type" "$domain" "$old_ip" "$new_ip" "$reason" "$timestamp" "$hostname"
+    if [[ "$(echo "$notif_config" | jq -r '.channels.slack.enabled // false')" == "true" ]]; then
+        send_slack "$notif_config" "$event_type" "$domain" "$old_ip" "$new_ip" "$reason" "$timestamp" "$hostname"
     fi
 
-    if [[ "$(echo "$config" | jq -r '.notifications.channels.webhook.enabled // false')" == "true" ]]; then
-        send_webhook "$config" "$event_type" "$domain" "$old_ip" "$new_ip" "$reason" "$timestamp" "$hostname"
+    if [[ "$(echo "$notif_config" | jq -r '.channels.webhook.enabled // false')" == "true" ]]; then
+        send_webhook "$notif_config" "$event_type" "$domain" "$old_ip" "$new_ip" "$reason" "$timestamp" "$hostname"
     fi
 }
 
@@ -431,6 +440,7 @@ update_cloudflare_dns() {
 main() {
     local domain primary_ip secondary_ip email api_key zone_id excluded_subdomains
     local cache_file cached_ip config response_timeout max_retries retry_delay
+    local notif_config domain_notif_enabled
 
     mkdir -p "$CACHE_DIR"
     mkdir -p "$(dirname "$LOG_FILE")"
@@ -445,7 +455,17 @@ main() {
         return 1
     fi
 
-    configs=$(jq -c '.[]' <"$CONFIG_FILE" 2>/dev/null)
+    # Read global notification config (top-level "notifications" key)
+    notif_config=$(jq -c '.notifications // empty' <"$CONFIG_FILE" 2>/dev/null)
+
+    # Read domains array (supports both new object format and legacy array format)
+    local configs
+    if jq -e '.domains' <"$CONFIG_FILE" >/dev/null 2>&1; then
+        configs=$(jq -c '.domains[]' <"$CONFIG_FILE" 2>/dev/null)
+    else
+        configs=$(jq -c '.[]' <"$CONFIG_FILE" 2>/dev/null)
+    fi
+
     if [[ -z "$configs" ]]; then
         log_message "ERROR" "Failed to parse config file or no domains configured: $CONFIG_FILE"
         return 1
@@ -459,6 +479,9 @@ main() {
         api_key=$(echo "$config" | jq -r '.api_key')
         zone_id=$(echo "$config" | jq -r '.zone_id')
         mapfile -t excluded_subdomains < <(echo "$config" | jq -r '.excluded_subdomains[]' 2>/dev/null)
+
+        # Per-domain notification override (default: enabled unless explicitly false)
+        domain_notif_enabled=$(echo "$config" | jq -r '.notifications_enabled // "true"')
 
         # Per-domain configurable thresholds (fall back to defaults)
         response_timeout=$(echo "$config" | jq -r '.response_timeout // empty')
@@ -482,7 +505,7 @@ main() {
                 if check_ip_online "$primary_ip" "$max_retries" "$retry_delay"; then
                     log_message "INFO" "Primary IP $primary_ip recovered. Failing back from secondary $secondary_ip..."
                     update_cloudflare_dns "$email" "$api_key" "$zone_id" "$domain" "$primary_ip" "${excluded_subdomains[@]}"
-                    send_notification "$config" "failback" "$domain" "$secondary_ip" "$primary_ip" "Primary IP recovered"
+                    send_notification "$notif_config" "$domain_notif_enabled" "failback" "$domain" "$secondary_ip" "$primary_ip" "Primary IP recovered"
                 else
                     log_message "INFO" "Primary still down. Continuing on secondary IP $secondary_ip for $domain"
                 fi
@@ -496,7 +519,7 @@ main() {
                         log_message "INFO" "Continuing to use secondary IP $secondary_ip for $domain"
                     else
                         log_message "CRITICAL" "Both IPs offline for $domain. Urgent attention required!"
-                        send_notification "$config" "both_offline" "$domain" "$primary_ip" "$secondary_ip" "Both primary and secondary IPs unreachable"
+                        send_notification "$notif_config" "$domain_notif_enabled" "both_offline" "$domain" "$primary_ip" "$secondary_ip" "Both primary and secondary IPs unreachable"
                     fi
                 fi
             else
@@ -507,14 +530,14 @@ main() {
             if check_ip_online "$primary_ip" "$max_retries" "$retry_delay"; then
                 update_cloudflare_dns "$email" "$api_key" "$zone_id" "$domain" "$primary_ip" "${excluded_subdomains[@]}"
                 log_message "INFO" "Switched to primary IP $primary_ip for $domain"
-                send_notification "$config" "failover" "$domain" "$cached_ip" "$primary_ip" "Domain offline or too slow, switched to primary"
+                send_notification "$notif_config" "$domain_notif_enabled" "failover" "$domain" "$cached_ip" "$primary_ip" "Domain offline or too slow, switched to primary"
             elif check_ip_online "$secondary_ip" "$max_retries" "$retry_delay"; then
                 update_cloudflare_dns "$email" "$api_key" "$zone_id" "$domain" "$secondary_ip" "${excluded_subdomains[@]}"
                 log_message "INFO" "Switched to secondary IP $secondary_ip for $domain"
-                send_notification "$config" "failover" "$domain" "$cached_ip" "$secondary_ip" "Domain offline or too slow, failover to secondary"
+                send_notification "$notif_config" "$domain_notif_enabled" "failover" "$domain" "$cached_ip" "$secondary_ip" "Domain offline or too slow, failover to secondary"
             else
                 log_message "CRITICAL" "Both IPs offline for $domain. Urgent attention required!"
-                send_notification "$config" "both_offline" "$domain" "$primary_ip" "$secondary_ip" "Both primary and secondary IPs unreachable"
+                send_notification "$notif_config" "$domain_notif_enabled" "both_offline" "$domain" "$primary_ip" "$secondary_ip" "Both primary and secondary IPs unreachable"
             fi
         fi
     done

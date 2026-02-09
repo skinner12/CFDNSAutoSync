@@ -8,11 +8,11 @@ This script is designed to automate the process of updating DNS records on Cloud
 - **Retry Logic**: Retries health checks multiple times before declaring failure, avoiding false positives from transient network issues.
 - **Auto Failback**: Automatically switches back to the primary IP when it recovers, even while the domain is still online on the secondary IP.
 - **Failover Handling**: Switches to a secondary IP if the primary IP is offline or too slow.
-- **Notifications**: Optional alerts via Telegram, Slack, or generic Webhook on failover, failback, and critical events. Configurable per domain with cooldown to prevent spam.
+- **Notifications**: Optional alerts via Telegram, Slack, or generic Webhook on failover, failback, and critical events. Global configuration with per-domain opt-out and cooldown to prevent spam.
 - **DNS Record Validation**: Checks current DNS record content before updating, skipping records already at the target IP.
 - **Dry-Run Mode**: Simulate updates without making actual DNS changes using `--dry-run`.
 - **Timestamped Logging**: All operations are logged with timestamps and severity levels (INFO/WARN/ERROR/CRITICAL) to both console and log file.
-- **Per-Domain Configuration**: Each domain can have its own response timeout, retry count, retry delay, and notification settings.
+- **Per-Domain Configuration**: Each domain can have its own response timeout, retry count, and retry delay. Notifications can be disabled per domain.
 - **Persistent Cache**: IP cache stored in `~/.cloudflare_dns_updater/cache/` (survives reboots).
 - **Exclusion List**: Allows users to specify subdomains that should not be updated.
 
@@ -26,44 +26,56 @@ This script is designed to automate the process of updating DNS records on Cloud
 Before running the script, you must configure it with your Cloudflare credentials and target domain information. This includes setting up a configuration file named `domain.json` in the following format:
 
 ```json
-[
-    {
-        "domain": "example.com",
-        "primary_ip": "192.168.1.1",
-        "secondary_ip": "192.168.1.2",
-        "email": "your-email@example.com",
-        "api_key": "your-api-key",
-        "zone_id": "your-zone-id",
-        "excluded_subdomains": ["sub1", "sub2"],
-        "response_timeout": 3,
-        "max_retries": 3,
-        "retry_delay": 2,
-        "notifications": {
-            "enabled": true,
-            "events": ["failover", "failback", "both_offline"],
-            "cooldown_minutes": 30,
-            "channels": {
-                "telegram": {
-                    "enabled": true,
-                    "bot_token": "123456:ABC-DEF...",
-                    "chat_id": "-1001234567890"
-                },
-                "slack": {
-                    "enabled": false,
-                    "webhook_url": "https://hooks.slack.com/services/T00/B00/xxx"
-                },
-                "webhook": {
-                    "enabled": false,
-                    "url": "https://your-endpoint.com/notify",
-                    "method": "POST"
-                }
+{
+    "notifications": {
+        "enabled": true,
+        "events": ["failover", "failback", "both_offline"],
+        "cooldown_minutes": 30,
+        "channels": {
+            "telegram": {
+                "enabled": true,
+                "bot_token": "123456:ABC-DEF...",
+                "chat_id": "-1001234567890"
+            },
+            "slack": {
+                "enabled": false,
+                "webhook_url": "https://hooks.slack.com/services/T00/B00/xxx"
+            },
+            "webhook": {
+                "enabled": false,
+                "url": "https://your-endpoint.com/notify",
+                "method": "POST"
             }
         }
-    }
-]
+    },
+    "domains": [
+        {
+            "domain": "example.com",
+            "primary_ip": "192.168.1.1",
+            "secondary_ip": "192.168.1.2",
+            "email": "your-email@example.com",
+            "api_key": "your-api-key",
+            "zone_id": "your-zone-id",
+            "excluded_subdomains": ["sub1", "sub2"],
+            "response_timeout": 3,
+            "max_retries": 3,
+            "retry_delay": 2
+        },
+        {
+            "domain": "example2.com",
+            "primary_ip": "10.0.0.1",
+            "secondary_ip": "10.0.0.2",
+            "email": "your-email@example.com",
+            "api_key": "your-api-key",
+            "zone_id": "your-zone-id-2",
+            "excluded_subdomains": [],
+            "notifications_enabled": false
+        }
+    ]
+}
 ```
 
-### Configuration Fields
+### Domain Fields
 
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
@@ -77,12 +89,13 @@ Before running the script, you must configure it with your Cloudflare credential
 | `response_timeout` | No | `3` | Max acceptable response time in seconds |
 | `max_retries` | No | `3` | Number of retry attempts before declaring failure |
 | `retry_delay` | No | `2` | Seconds to wait between retries |
+| `notifications_enabled` | No | `true` | Set to `false` to disable notifications for this domain only |
 
-### Notification Fields (all optional)
+### Notification Fields (global, all optional)
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `notifications.enabled` | `false` | Master switch to enable/disable notifications for this domain |
+| `notifications.enabled` | `false` | Master switch to enable/disable notifications for all domains |
 | `notifications.events` | `["failover","failback","both_offline"]` | Which events trigger notifications |
 | `notifications.cooldown_minutes` | `30` | Minimum minutes between repeated notifications of the same event type |
 | `notifications.channels.telegram.enabled` | `false` | Enable Telegram notifications |
@@ -128,7 +141,7 @@ Before running the script, you must configure it with your Cloudflare credential
 ./cloudflare_dns_updater.sh --help
 ```
 
-The script will process each domain defined in your `domain.json` file. It will check if the domain is online and responding within the configured timeout, compare the current IP against the primary and secondary IPs, and update the DNS records on Cloudflare if necessary. When a DNS change occurs, notifications are sent to all enabled channels.
+The script will process each domain in the `domains` array. It checks if the domain is online and responding within the configured timeout, compares the current IP against the primary and secondary IPs, and updates the DNS records on Cloudflare if necessary. When a DNS change occurs, notifications are sent to all enabled channels (unless the domain has `notifications_enabled: false`).
 
 ## Logging
 
@@ -142,7 +155,7 @@ Log levels:
 
 ## Customization
 
-You can customize the script by modifying the `domain.json` file to include new domains or change IP addresses. The list of excluded subdomains can also be updated as per your requirements. Each domain can have its own `response_timeout`, `max_retries`, `retry_delay`, and `notifications` settings, or omit them to use the defaults.
+You can customize the script by modifying the `domain.json` file to include new domains or change IP addresses. The list of excluded subdomains can also be updated as per your requirements. Each domain can have its own `response_timeout`, `max_retries`, and `retry_delay`, or omit them to use the defaults. Notifications are configured globally and can be disabled per domain with `"notifications_enabled": false`.
 
 ## Automating Checks and Updates
 

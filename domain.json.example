@@ -1,48 +1,51 @@
-[
-	{
-		"domain": "domain.com",
-		"primary_ip": "1.1.1.1",
-		"secondary_ip": "1.2.3.4",
-		"email": "some_email@domain.com",
-		"api_key": "3233e2d23d23d2323d23d23d23d23d",
-		"zone_id": "d23223d23d4f1234334f34134f1134f",
-		"excluded_subdomains": [
-			"no-update"
-		],
-		"response_timeout": 3,
-		"max_retries": 3,
-		"retry_delay": 2,
-		"notifications": {
-			"enabled": true,
-			"events": ["failover", "failback", "both_offline"],
-			"cooldown_minutes": 30,
-			"channels": {
-				"telegram": {
-					"enabled": true,
-					"bot_token": "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11",
-					"chat_id": "-1001234567890"
-				},
-				"slack": {
-					"enabled": false,
-					"webhook_url": "https://hooks.slack.com/services/T00/B00/xxx"
-				},
-				"webhook": {
-					"enabled": false,
-					"url": "https://your-endpoint.com/notify",
-					"method": "POST"
-				}
+{
+	"notifications": {
+		"enabled": true,
+		"events": ["failover", "failback", "both_offline"],
+		"cooldown_minutes": 30,
+		"channels": {
+			"telegram": {
+				"enabled": true,
+				"bot_token": "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11",
+				"chat_id": "-1001234567890"
+			},
+			"slack": {
+				"enabled": false,
+				"webhook_url": "https://hooks.slack.com/services/T00/B00/xxx"
+			},
+			"webhook": {
+				"enabled": false,
+				"url": "https://your-endpoint.com/notify",
+				"method": "POST"
 			}
 		}
 	},
-	{
-		"domain": "domain2.com",
-		"primary_ip": "1.1.1.1",
-		"secondary_ip": "1.2.3.4",
-		"email": "some_email@domain.com",
-		"api_key": "3233e2d23d23d2323d23d23d23d23d",
-		"zone_id": "d23223d23d4f1234334f34134f1134f",
-		"excluded_subdomains": [
-			"no-update-subdomain"
-		]
-	}
-]
+	"domains": [
+		{
+			"domain": "domain.com",
+			"primary_ip": "1.1.1.1",
+			"secondary_ip": "1.2.3.4",
+			"email": "some_email@domain.com",
+			"api_key": "3233e2d23d23d2323d23d23d23d23d",
+			"zone_id": "d23223d23d4f1234334f34134f1134f",
+			"excluded_subdomains": [
+				"no-update"
+			],
+			"response_timeout": 3,
+			"max_retries": 3,
+			"retry_delay": 2
+		},
+		{
+			"domain": "domain2.com",
+			"primary_ip": "1.1.1.1",
+			"secondary_ip": "1.2.3.4",
+			"email": "some_email@domain.com",
+			"api_key": "3233e2d23d23d2323d23d23d23d23d",
+			"zone_id": "d23223d23d4f1234334f34134f1134f",
+			"excluded_subdomains": [
+				"no-update-subdomain"
+			],
+			"notifications_enabled": false
+		}
+	]
+}
