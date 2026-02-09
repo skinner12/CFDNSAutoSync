@@ -11,7 +11,28 @@
 		],
 		"response_timeout": 3,
 		"max_retries": 3,
-		"retry_delay": 2
+		"retry_delay": 2,
+		"notifications": {
+			"enabled": true,
+			"events": ["failover", "failback", "both_offline"],
+			"cooldown_minutes": 30,
+			"channels": {
+				"telegram": {
+					"enabled": true,
+					"bot_token": "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11",
+					"chat_id": "-1001234567890"
+				},
+				"slack": {
+					"enabled": false,
+					"webhook_url": "https://hooks.slack.com/services/T00/B00/xxx"
+				},
+				"webhook": {
+					"enabled": false,
+					"url": "https://your-endpoint.com/notify",
+					"method": "POST"
+				}
+			}
+		}
 	},
 	{
 		"domain": "domain2.com",
