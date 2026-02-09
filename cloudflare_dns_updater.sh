@@ -327,7 +327,7 @@ check_domain_online() {
     return 1
 }
 
-# Check if an IP is reachable by pinging it
+# Check if an IP is reachable by ping and has web service running (port 80/443)
 check_ip_online() {
     local ip=$1
     local max_retries=${2:-$DEFAULT_MAX_RETRIES}
@@ -335,12 +335,23 @@ check_ip_online() {
     local attempt
 
     for ((attempt = 1; attempt <= max_retries; attempt++)); do
-        if ping -c 3 -W 2 "$ip" >/dev/null 2>&1; then
-            log_message "INFO" "IP $ip is online"
+        # Check ICMP ping
+        if ! ping -c 2 -W 2 "$ip" >/dev/null 2>&1; then
+            log_message "WARN" "Attempt $attempt/$max_retries: IP $ip is unreachable (ping failed)"
+            if [[ $attempt -lt $max_retries ]]; then
+                sleep "$retry_delay"
+            fi
+            continue
+        fi
+
+        # Check TCP port 443 (HTTPS), fallback to port 80 (HTTP)
+        if curl -s --connect-timeout 3 --max-time 5 -o /dev/null "https://$ip" -k 2>/dev/null ||
+           curl -s --connect-timeout 3 --max-time 5 -o /dev/null "http://$ip" 2>/dev/null; then
+            log_message "INFO" "IP $ip is online (ping + port check OK)"
             return 0
         fi
 
-        log_message "WARN" "Attempt $attempt/$max_retries: IP $ip is unreachable"
+        log_message "WARN" "Attempt $attempt/$max_retries: IP $ip responds to ping but web service is down (port 80/443 closed)"
         if [[ $attempt -lt $max_retries ]]; then
             sleep "$retry_delay"
         fi
