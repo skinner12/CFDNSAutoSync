@@ -8,7 +8,10 @@
 		"zone_id": "d23223d23d4f1234334f34134f1134f",
 		"excluded_subdomains": [
 			"no-update"
-		]
+		],
+		"response_timeout": 3,
+		"max_retries": 3,
+		"retry_delay": 2
 	},
 	{
 		"domain": "domain2.com",
@@ -20,5 +23,5 @@
 		"excluded_subdomains": [
 			"no-update-subdomain"
 		]
-	},
+	}
 ]
