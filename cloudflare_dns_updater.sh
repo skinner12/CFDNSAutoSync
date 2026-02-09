@@ -393,7 +393,7 @@ update_cloudflare_dns() {
         subdomain_part="${record_name%."$domain"}"
 
         # Skip excluded subdomains
-        if [[ " ${excluded_subdomains[*]} " =~ " $subdomain_part " ]]; then
+        if [[ " ${excluded_subdomains[*]} " =~ [[:space:]]${subdomain_part}[[:space:]] ]]; then
             log_message "INFO" "Skipped $record_name (excluded)"
             continue
         fi

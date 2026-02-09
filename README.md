@@ -1,5 +1,10 @@
 # Cloudflare DNS Update Script
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Release](https://img.shields.io/github/v/release/skinner12/CFDNSAutoSync)](https://github.com/skinner12/CFDNSAutoSync/releases)
+[![ShellCheck](https://github.com/skinner12/CFDNSAutoSync/actions/workflows/shellcheck.yml/badge.svg)](https://github.com/skinner12/CFDNSAutoSync/actions/workflows/shellcheck.yml)
+[![Docker](https://img.shields.io/badge/docker-ghcr.io-blue)](https://github.com/skinner12/CFDNSAutoSync/pkgs/container/CFDNSAutoSync)
+
 ## Overview
 This script is designed to automate the process of updating DNS records on Cloudflare for specified domains. It checks the online status and response time of the domain, verifies IP consistency, and updates DNS records if necessary. It handles primary and secondary IP failovers with automatic failback, and sends notifications (Telegram, Slack, Webhook) when IP changes occur.
 
