@@ -8,6 +8,7 @@ CLOUDFLARE_API_ENDPOINT="https://api.cloudflare.com/client/v4"
 LOCK_FILE="${HOME}/.cloudflare_dns_updater/dns_updater.lock"
 CACHE_DIR="${HOME}/.cloudflare_dns_updater/cache"
 NOTIFICATION_CACHE_DIR="${HOME}/.cloudflare_dns_updater/notification_cache"
+DOWNTIME_CACHE_DIR="${HOME}/.cloudflare_dns_updater/downtime_cache"
 LOG_FILE="${HOME}/.cloudflare_dns_updater/dns_updater.log"
 DRY_RUN=false
 DEFAULT_RESPONSE_TIMEOUT=3
@@ -517,7 +518,26 @@ main() {
                 if check_ip_online "$primary_ip" "$max_retries" "$retry_delay"; then
                     log_message "INFO" "Primary IP $primary_ip recovered. Failing back from secondary $secondary_ip..."
                     update_cloudflare_dns "$email" "$api_key" "$zone_id" "$domain" "$primary_ip" "${excluded_subdomains[@]}"
-                    send_notification "$notif_config" "$domain_notif_enabled" "failback" "$domain" "$secondary_ip" "$primary_ip" "Primary IP recovered"
+                    # Calculate downtime duration
+                    local downtime_file="$DOWNTIME_CACHE_DIR/$domain"
+                    local failback_reason="Primary IP recovered"
+                    if [[ -f "$downtime_file" ]]; then
+                        local failover_time now_ts downtime_seconds downtime_min downtime_hr
+                        failover_time=$(cat "$downtime_file")
+                        now_ts=$(date +%s)
+                        downtime_seconds=$((now_ts - failover_time))
+                        if [[ $downtime_seconds -ge 3600 ]]; then
+                            downtime_hr=$((downtime_seconds / 3600))
+                            downtime_min=$(( (downtime_seconds % 3600) / 60 ))
+                            failback_reason="Primary IP recovered (downtime: ${downtime_hr}h ${downtime_min}m)"
+                        else
+                            downtime_min=$((downtime_seconds / 60))
+                            failback_reason="Primary IP recovered (downtime: ${downtime_min}m)"
+                        fi
+                        log_message "INFO" "Primary was offline for $failback_reason for $domain"
+                        rm -f "$downtime_file"
+                    fi
+                    send_notification "$notif_config" "$domain_notif_enabled" "failback" "$domain" "$secondary_ip" "$primary_ip" "$failback_reason"
                 else
                     log_message "INFO" "Primary still down. Continuing on secondary IP $secondary_ip for $domain"
                 fi
@@ -539,6 +559,11 @@ main() {
             fi
         else
             log_message "ERROR" "$domain is offline or too slow. Initiating failover..."
+            # Record failover start time for downtime tracking
+            mkdir -p "$DOWNTIME_CACHE_DIR"
+            if [[ ! -f "$DOWNTIME_CACHE_DIR/$domain" ]]; then
+                date +%s > "$DOWNTIME_CACHE_DIR/$domain"
+            fi
             if check_ip_online "$primary_ip" "$max_retries" "$retry_delay"; then
                 update_cloudflare_dns "$email" "$api_key" "$zone_id" "$domain" "$primary_ip" "${excluded_subdomains[@]}"
                 log_message "INFO" "Switched to primary IP $primary_ip for $domain"
