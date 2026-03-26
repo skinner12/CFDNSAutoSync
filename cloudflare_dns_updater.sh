@@ -363,6 +363,63 @@ check_ip_online() {
     return 1
 }
 
+# Check if an IP actually serves HTTP traffic for a domain (L7 health check)
+check_ip_http() {
+    local ip=$1
+    local domain=$2
+    local response_timeout=${3:-$DEFAULT_RESPONSE_TIMEOUT}
+    local max_retries=${4:-$DEFAULT_MAX_RETRIES}
+    local retry_delay=${5:-$DEFAULT_RETRY_DELAY}
+    local attempt
+
+    for ((attempt = 1; attempt <= max_retries; attempt++)); do
+        local http_output status_code response_time
+
+        # HTTP request directly to the IP with Host header to get a real L7 response
+        http_output=$(curl -o /dev/null -s -L \
+            -w "%{http_code} %{time_total}" \
+            --connect-timeout 10 \
+            --max-time "$((response_timeout + 5))" \
+            --resolve "${domain}:443:${ip}" \
+            --resolve "${domain}:80:${ip}" \
+            "https://$domain" 2>/dev/null)
+
+        status_code=$(echo "$http_output" | awk '{print $1}')
+        response_time=$(echo "$http_output" | awk '{print $2}')
+
+        if [[ -z "$status_code" ]] || [[ -z "$response_time" ]]; then
+            log_message "WARN" "Attempt $attempt/$max_retries: HTTP check failed for IP $ip (domain: $domain)"
+            if [[ $attempt -lt $max_retries ]]; then
+                sleep "$retry_delay"
+            fi
+            continue
+        fi
+
+        if (( $(echo "$response_time > $response_timeout" | bc -l) )); then
+            log_message "WARN" "Attempt $attempt/$max_retries: IP $ip responded in ${response_time}s for $domain (threshold: ${response_timeout}s)"
+            if [[ $attempt -lt $max_retries ]]; then
+                sleep "$retry_delay"
+                continue
+            fi
+            log_message "ERROR" "IP $ip too slow for $domain after $max_retries attempts"
+            return 1
+        fi
+
+        if [[ "$status_code" -ge 200 ]] && [[ "$status_code" -lt 400 ]]; then
+            log_message "INFO" "IP $ip serves $domain OK (HTTP $status_code, ${response_time}s)"
+            return 0
+        fi
+
+        log_message "WARN" "Attempt $attempt/$max_retries: IP $ip returned HTTP $status_code for $domain (${response_time}s)"
+        if [[ $attempt -lt $max_retries ]]; then
+            sleep "$retry_delay"
+        fi
+    done
+
+    log_message "ERROR" "IP $ip failed HTTP health check for $domain after $max_retries attempts"
+    return 1
+}
+
 # ─── DNS Update Function ─────────────────────────────────────
 
 # Update Cloudflare DNS A records for all subdomains except excluded ones
@@ -513,9 +570,9 @@ main() {
         if check_domain_online "$domain" "$response_timeout" "$max_retries" "$retry_delay"; then
             log_message "INFO" "$domain is online. Checking IP consistency..."
 
-            # Auto failback - if on secondary, check if primary recovered
+            # Auto failback - if on secondary, check if primary recovered (L7 check)
             if [[ "$cached_ip" == "$secondary_ip" ]]; then
-                if check_ip_online "$primary_ip" "$max_retries" "$retry_delay"; then
+                if check_ip_http "$primary_ip" "$domain" "$response_timeout" "$max_retries" "$retry_delay"; then
                     log_message "INFO" "Primary IP $primary_ip recovered. Failing back from secondary $secondary_ip..."
                     update_cloudflare_dns "$email" "$api_key" "$zone_id" "$domain" "$primary_ip" "${excluded_subdomains[@]}"
                     # Calculate downtime duration
@@ -542,12 +599,12 @@ main() {
                     log_message "INFO" "Primary still down. Continuing on secondary IP $secondary_ip for $domain"
                 fi
             elif [[ "$cached_ip" != "$primary_ip" ]]; then
-                if check_ip_online "$primary_ip" "$max_retries" "$retry_delay"; then
-                    log_message "INFO" "Primary IP $primary_ip is online, cached IP is $cached_ip. Updating DNS..."
+                if check_ip_http "$primary_ip" "$domain" "$response_timeout" "$max_retries" "$retry_delay"; then
+                    log_message "INFO" "Primary IP $primary_ip is serving $domain, cached IP is $cached_ip. Updating DNS..."
                     update_cloudflare_dns "$email" "$api_key" "$zone_id" "$domain" "$primary_ip" "${excluded_subdomains[@]}"
                 else
-                    log_message "WARN" "Primary IP $primary_ip is offline. Checking secondary..."
-                    if check_ip_online "$secondary_ip" "$max_retries" "$retry_delay"; then
+                    log_message "WARN" "Primary IP $primary_ip failed HTTP check. Checking secondary..."
+                    if check_ip_http "$secondary_ip" "$domain" "$response_timeout" "$max_retries" "$retry_delay"; then
                         log_message "INFO" "Continuing to use secondary IP $secondary_ip for $domain"
                     else
                         log_message "CRITICAL" "Both IPs offline for $domain. Urgent attention required!"
@@ -564,17 +621,31 @@ main() {
             if [[ ! -f "$DOWNTIME_CACHE_DIR/$domain" ]]; then
                 date +%s > "$DOWNTIME_CACHE_DIR/$domain"
             fi
-            if check_ip_online "$primary_ip" "$max_retries" "$retry_delay"; then
-                update_cloudflare_dns "$email" "$api_key" "$zone_id" "$domain" "$primary_ip" "${excluded_subdomains[@]}"
-                log_message "INFO" "Switched to primary IP $primary_ip for $domain"
-                send_notification "$notif_config" "$domain_notif_enabled" "failover" "$domain" "$cached_ip" "$primary_ip" "Domain offline or too slow, switched to primary"
-            elif check_ip_online "$secondary_ip" "$max_retries" "$retry_delay"; then
-                update_cloudflare_dns "$email" "$api_key" "$zone_id" "$domain" "$secondary_ip" "${excluded_subdomains[@]}"
-                log_message "INFO" "Switched to secondary IP $secondary_ip for $domain"
-                send_notification "$notif_config" "$domain_notif_enabled" "failover" "$domain" "$cached_ip" "$secondary_ip" "Domain offline or too slow, failover to secondary"
+
+            # Determine failover order: try the OTHER IP first since the current one is failing
+            local first_ip second_ip
+            if [[ "$cached_ip" == "$primary_ip" ]]; then
+                # Currently on primary and it's failing → try secondary first
+                first_ip="$secondary_ip"
+                second_ip="$primary_ip"
+                log_message "INFO" "Currently on primary ($primary_ip), trying secondary first..."
+            else
+                # Currently on secondary (or no cache) → try primary first
+                first_ip="$primary_ip"
+                second_ip="$secondary_ip"
+            fi
+
+            if check_ip_http "$first_ip" "$domain" "$response_timeout" "$max_retries" "$retry_delay"; then
+                update_cloudflare_dns "$email" "$api_key" "$zone_id" "$domain" "$first_ip" "${excluded_subdomains[@]}"
+                log_message "INFO" "Switched to IP $first_ip for $domain"
+                send_notification "$notif_config" "$domain_notif_enabled" "failover" "$domain" "$cached_ip" "$first_ip" "Domain offline or too slow, failover to $first_ip"
+            elif check_ip_http "$second_ip" "$domain" "$response_timeout" "$max_retries" "$retry_delay"; then
+                update_cloudflare_dns "$email" "$api_key" "$zone_id" "$domain" "$second_ip" "${excluded_subdomains[@]}"
+                log_message "INFO" "Switched to IP $second_ip for $domain"
+                send_notification "$notif_config" "$domain_notif_enabled" "failover" "$domain" "$cached_ip" "$second_ip" "Domain offline or too slow, failover to $second_ip"
             else
                 log_message "CRITICAL" "Both IPs offline for $domain. Urgent attention required!"
-                send_notification "$notif_config" "$domain_notif_enabled" "both_offline" "$domain" "$primary_ip" "$secondary_ip" "Both primary and secondary IPs unreachable"
+                send_notification "$notif_config" "$domain_notif_enabled" "both_offline" "$domain" "$primary_ip" "$secondary_ip" "Both primary and secondary IPs unreachable (L7 check failed)"
             fi
         fi
     done
