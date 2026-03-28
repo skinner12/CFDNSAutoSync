@@ -376,13 +376,28 @@ check_ip_http() {
         local http_output status_code response_time
 
         # HTTP request directly to the IP with Host header to get a real L7 response
-        http_output=$(curl -o /dev/null -s -L \
+        # Try HTTPS first (with -k to accept origin certificates not trusted by curl,
+        # e.g. Cloudflare Origin CA certs), fall back to HTTP if HTTPS fails
+        http_output=$(curl -o /dev/null -s -L -k \
             -w "%{http_code} %{time_total}" \
             --connect-timeout 10 \
             --max-time "$((response_timeout + 5))" \
             --resolve "${domain}:443:${ip}" \
             --resolve "${domain}:80:${ip}" \
             "https://$domain" 2>/dev/null)
+
+        status_code=$(echo "$http_output" | awk '{print $1}')
+
+        # If HTTPS failed completely (HTTP 000), try plain HTTP
+        if [[ "$status_code" == "000" ]]; then
+            log_message "INFO" "HTTPS failed for IP $ip ($domain), trying HTTP..."
+            http_output=$(curl -o /dev/null -s -L \
+                -w "%{http_code} %{time_total}" \
+                --connect-timeout 10 \
+                --max-time "$((response_timeout + 5))" \
+                --resolve "${domain}:80:${ip}" \
+                "http://$domain" 2>/dev/null)
+        fi
 
         status_code=$(echo "$http_output" | awk '{print $1}')
         response_time=$(echo "$http_output" | awk '{print $2}')
