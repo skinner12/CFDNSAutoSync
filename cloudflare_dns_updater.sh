@@ -594,7 +594,7 @@ main() {
                     update_cloudflare_dns "$email" "$api_key" "$zone_id" "$domain" "$primary_ip" "${excluded_subdomains[@]}"
                     # Calculate downtime duration
                     local downtime_file="$DOWNTIME_CACHE_DIR/$domain"
-                    local failback_reason="Primary IP recovered"
+                    local failback_reason="Primary IP recovered — proxy and backend connection OK"
                     if [[ -f "$downtime_file" ]]; then
                         local failover_time now_ts downtime_seconds downtime_min downtime_hr
                         failover_time=$(cat "$downtime_file")
@@ -603,10 +603,10 @@ main() {
                         if [[ $downtime_seconds -ge 3600 ]]; then
                             downtime_hr=$((downtime_seconds / 3600))
                             downtime_min=$(( (downtime_seconds % 3600) / 60 ))
-                            failback_reason="Primary IP recovered (downtime: ${downtime_hr}h ${downtime_min}m)"
+                            failback_reason="Primary IP recovered — proxy and backend connection OK (downtime: ${downtime_hr}h ${downtime_min}m)"
                         else
                             downtime_min=$((downtime_seconds / 60))
-                            failback_reason="Primary IP recovered (downtime: ${downtime_min}m)"
+                            failback_reason="Primary IP recovered — proxy and backend connection OK (downtime: ${downtime_min}m)"
                         fi
                         log_message "INFO" "Primary was offline for $failback_reason for $domain"
                         rm -f "$downtime_file"
@@ -620,12 +620,12 @@ main() {
                     log_message "INFO" "Primary IP $primary_ip is serving $domain, cached IP is $cached_ip. Updating DNS..."
                     update_cloudflare_dns "$email" "$api_key" "$zone_id" "$domain" "$primary_ip" "${excluded_subdomains[@]}"
                 else
-                    log_message "WARN" "Primary IP $primary_ip backend unhealthy. Checking secondary..."
+                    log_message "WARN" "Primary IP $primary_ip backend connection down. Checking secondary..."
                     if check_ip_http "$secondary_ip" "$domain" "$response_timeout" "$max_retries" "$retry_delay"; then
                         log_message "INFO" "Continuing to use secondary IP $secondary_ip for $domain"
                     else
                         log_message "CRITICAL" "Both IPs offline for $domain. Urgent attention required!"
-                        send_notification "$notif_config" "$domain_notif_enabled" "both_offline" "$domain" "$primary_ip" "$secondary_ip" "Both primary and secondary IPs unreachable"
+                        send_notification "$notif_config" "$domain_notif_enabled" "both_offline" "$domain" "$primary_ip" "$secondary_ip" "Backend connection down on both servers ($primary_ip and $secondary_ip)"
                     fi
                 fi
             else
@@ -652,19 +652,26 @@ main() {
                 second_ip="$secondary_ip"
             fi
 
-            # Use L3/L4 check (ping + port) for failover targets — direct L7 checks
-            # don't work on Cloudflare-proxied origins (haproxy ACLs, origin certs)
+            # Diagnose the source IP: server down or backend connection issue?
+            local source_diag=""
+            if check_ip_online "$cached_ip" 1 1; then
+                source_diag="Server $cached_ip reachable (proxy up), backend connection down"
+            else
+                source_diag="Server $cached_ip unreachable (proxy down)"
+            fi
+
+            # Use L3/L4 check (ping + port) for failover targets
             if check_ip_online "$first_ip" "$max_retries" "$retry_delay"; then
                 update_cloudflare_dns "$email" "$api_key" "$zone_id" "$domain" "$first_ip" "${excluded_subdomains[@]}"
                 log_message "INFO" "Switched to IP $first_ip for $domain"
-                send_notification "$notif_config" "$domain_notif_enabled" "failover" "$domain" "$cached_ip" "$first_ip" "Domain offline or too slow, failover to $first_ip"
+                send_notification "$notif_config" "$domain_notif_enabled" "failover" "$domain" "$cached_ip" "$first_ip" "${source_diag}. Failover to $first_ip"
             elif check_ip_online "$second_ip" "$max_retries" "$retry_delay"; then
                 update_cloudflare_dns "$email" "$api_key" "$zone_id" "$domain" "$second_ip" "${excluded_subdomains[@]}"
                 log_message "INFO" "Switched to IP $second_ip for $domain"
-                send_notification "$notif_config" "$domain_notif_enabled" "failover" "$domain" "$cached_ip" "$second_ip" "Domain offline or too slow, failover to $second_ip"
+                send_notification "$notif_config" "$domain_notif_enabled" "failover" "$domain" "$cached_ip" "$second_ip" "${source_diag}. Failover to $second_ip"
             else
                 log_message "CRITICAL" "Both IPs offline for $domain. Urgent attention required!"
-                send_notification "$notif_config" "$domain_notif_enabled" "both_offline" "$domain" "$primary_ip" "$secondary_ip" "Both primary and secondary IPs unreachable"
+                send_notification "$notif_config" "$domain_notif_enabled" "both_offline" "$domain" "$primary_ip" "$secondary_ip" "Both servers unreachable (proxy down on $primary_ip and $secondary_ip)"
             fi
         fi
     done
