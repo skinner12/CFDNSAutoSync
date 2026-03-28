@@ -1,6 +1,6 @@
 #!/bin/bash
 
-VERSION="1.2.0"
+VERSION="1.3.0"
 
 # Configuration defaults
 CONFIG_FILE="domain.json"
