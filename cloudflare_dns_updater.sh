@@ -585,11 +585,11 @@ main() {
         if check_domain_online "$domain" "$response_timeout" "$max_retries" "$retry_delay"; then
             log_message "INFO" "$domain is online. Checking IP consistency..."
 
-            # Auto failback - if on secondary, check if primary is reachable (L3/L4)
-            # Note: direct L7 checks fail on Cloudflare-proxied setups (origin certs, haproxy ACLs)
-            # The domain check above already validates L7 health through Cloudflare
+            # Auto failback - if on secondary, check if primary actually serves traffic (L7)
+            # Uses check_ip_http to verify the backend is healthy (200 = OK, 503 = backend down)
+            # Requires script runner IP in haproxy whitelist.txt to bypass Cloudflare ACL
             if [[ "$cached_ip" == "$secondary_ip" ]]; then
-                if check_ip_online "$primary_ip" "$max_retries" "$retry_delay"; then
+                if check_ip_http "$primary_ip" "$domain" "$response_timeout" "$max_retries" "$retry_delay"; then
                     log_message "INFO" "Primary IP $primary_ip recovered. Failing back from secondary $secondary_ip..."
                     update_cloudflare_dns "$email" "$api_key" "$zone_id" "$domain" "$primary_ip" "${excluded_subdomains[@]}"
                     # Calculate downtime duration
@@ -616,12 +616,12 @@ main() {
                     log_message "INFO" "Primary still down. Continuing on secondary IP $secondary_ip for $domain"
                 fi
             elif [[ "$cached_ip" != "$primary_ip" ]]; then
-                if check_ip_online "$primary_ip" "$max_retries" "$retry_delay"; then
-                    log_message "INFO" "Primary IP $primary_ip is reachable, cached IP is $cached_ip. Updating DNS..."
+                if check_ip_http "$primary_ip" "$domain" "$response_timeout" "$max_retries" "$retry_delay"; then
+                    log_message "INFO" "Primary IP $primary_ip is serving $domain, cached IP is $cached_ip. Updating DNS..."
                     update_cloudflare_dns "$email" "$api_key" "$zone_id" "$domain" "$primary_ip" "${excluded_subdomains[@]}"
                 else
-                    log_message "WARN" "Primary IP $primary_ip unreachable. Checking secondary..."
-                    if check_ip_online "$secondary_ip" "$max_retries" "$retry_delay"; then
+                    log_message "WARN" "Primary IP $primary_ip backend unhealthy. Checking secondary..."
+                    if check_ip_http "$secondary_ip" "$domain" "$response_timeout" "$max_retries" "$retry_delay"; then
                         log_message "INFO" "Continuing to use secondary IP $secondary_ip for $domain"
                     else
                         log_message "CRITICAL" "Both IPs offline for $domain. Urgent attention required!"
