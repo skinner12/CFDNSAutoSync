@@ -585,9 +585,11 @@ main() {
         if check_domain_online "$domain" "$response_timeout" "$max_retries" "$retry_delay"; then
             log_message "INFO" "$domain is online. Checking IP consistency..."
 
-            # Auto failback - if on secondary, check if primary recovered (L7 check)
+            # Auto failback - if on secondary, check if primary is reachable (L3/L4)
+            # Note: direct L7 checks fail on Cloudflare-proxied setups (origin certs, haproxy ACLs)
+            # The domain check above already validates L7 health through Cloudflare
             if [[ "$cached_ip" == "$secondary_ip" ]]; then
-                if check_ip_http "$primary_ip" "$domain" "$response_timeout" "$max_retries" "$retry_delay"; then
+                if check_ip_online "$primary_ip" "$max_retries" "$retry_delay"; then
                     log_message "INFO" "Primary IP $primary_ip recovered. Failing back from secondary $secondary_ip..."
                     update_cloudflare_dns "$email" "$api_key" "$zone_id" "$domain" "$primary_ip" "${excluded_subdomains[@]}"
                     # Calculate downtime duration
@@ -614,12 +616,12 @@ main() {
                     log_message "INFO" "Primary still down. Continuing on secondary IP $secondary_ip for $domain"
                 fi
             elif [[ "$cached_ip" != "$primary_ip" ]]; then
-                if check_ip_http "$primary_ip" "$domain" "$response_timeout" "$max_retries" "$retry_delay"; then
-                    log_message "INFO" "Primary IP $primary_ip is serving $domain, cached IP is $cached_ip. Updating DNS..."
+                if check_ip_online "$primary_ip" "$max_retries" "$retry_delay"; then
+                    log_message "INFO" "Primary IP $primary_ip is reachable, cached IP is $cached_ip. Updating DNS..."
                     update_cloudflare_dns "$email" "$api_key" "$zone_id" "$domain" "$primary_ip" "${excluded_subdomains[@]}"
                 else
-                    log_message "WARN" "Primary IP $primary_ip failed HTTP check. Checking secondary..."
-                    if check_ip_http "$secondary_ip" "$domain" "$response_timeout" "$max_retries" "$retry_delay"; then
+                    log_message "WARN" "Primary IP $primary_ip unreachable. Checking secondary..."
+                    if check_ip_online "$secondary_ip" "$max_retries" "$retry_delay"; then
                         log_message "INFO" "Continuing to use secondary IP $secondary_ip for $domain"
                     else
                         log_message "CRITICAL" "Both IPs offline for $domain. Urgent attention required!"
@@ -650,17 +652,19 @@ main() {
                 second_ip="$secondary_ip"
             fi
 
-            if check_ip_http "$first_ip" "$domain" "$response_timeout" "$max_retries" "$retry_delay"; then
+            # Use L3/L4 check (ping + port) for failover targets — direct L7 checks
+            # don't work on Cloudflare-proxied origins (haproxy ACLs, origin certs)
+            if check_ip_online "$first_ip" "$max_retries" "$retry_delay"; then
                 update_cloudflare_dns "$email" "$api_key" "$zone_id" "$domain" "$first_ip" "${excluded_subdomains[@]}"
                 log_message "INFO" "Switched to IP $first_ip for $domain"
                 send_notification "$notif_config" "$domain_notif_enabled" "failover" "$domain" "$cached_ip" "$first_ip" "Domain offline or too slow, failover to $first_ip"
-            elif check_ip_http "$second_ip" "$domain" "$response_timeout" "$max_retries" "$retry_delay"; then
+            elif check_ip_online "$second_ip" "$max_retries" "$retry_delay"; then
                 update_cloudflare_dns "$email" "$api_key" "$zone_id" "$domain" "$second_ip" "${excluded_subdomains[@]}"
                 log_message "INFO" "Switched to IP $second_ip for $domain"
                 send_notification "$notif_config" "$domain_notif_enabled" "failover" "$domain" "$cached_ip" "$second_ip" "Domain offline or too slow, failover to $second_ip"
             else
                 log_message "CRITICAL" "Both IPs offline for $domain. Urgent attention required!"
-                send_notification "$notif_config" "$domain_notif_enabled" "both_offline" "$domain" "$primary_ip" "$secondary_ip" "Both primary and secondary IPs unreachable (L7 check failed)"
+                send_notification "$notif_config" "$domain_notif_enabled" "both_offline" "$domain" "$primary_ip" "$secondary_ip" "Both primary and secondary IPs unreachable"
             fi
         fi
     done
