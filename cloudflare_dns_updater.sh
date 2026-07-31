@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-VERSION="1.3.3"
+VERSION="1.4.0"
 
 # Configuration defaults
 CONFIG_FILE="domain.json"
