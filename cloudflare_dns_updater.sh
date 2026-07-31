@@ -1,6 +1,6 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
-VERSION="1.3.3"
+VERSION="1.3.4"
 
 # Configuration defaults
 CONFIG_FILE="domain.json"
@@ -15,6 +15,12 @@ DEFAULT_RESPONSE_TIMEOUT=3
 DEFAULT_MAX_RETRIES=3
 DEFAULT_RETRY_DELAY=2
 DEFAULT_NOTIFICATION_COOLDOWN=30
+
+# curl time budgets, derived from the configured response_timeout.
+# The connect phase must expire before the total budget, otherwise --max-time
+# truncates a hung connect and the failure is misreported as a slow response.
+CONNECT_TIMEOUT_MARGIN=2
+MAX_TIME_MARGIN=5
 
 # Ensure dependencies are installed
 for cmd in jq curl bc; do
@@ -278,7 +284,9 @@ check_domain_online() {
     local response_timeout=${2:-$DEFAULT_RESPONSE_TIMEOUT}
     local max_retries=${3:-$DEFAULT_MAX_RETRIES}
     local retry_delay=${4:-$DEFAULT_RETRY_DELAY}
-    local attempt
+    local attempt max_time connect_timeout
+    max_time=$((response_timeout + MAX_TIME_MARGIN))
+    connect_timeout=$((response_timeout + CONNECT_TIMEOUT_MARGIN))
 
     for ((attempt = 1; attempt <= max_retries; attempt++)); do
         local http_output status_code response_time
@@ -286,8 +294,8 @@ check_domain_online() {
         # Single curl call capturing both status code and response time
         http_output=$(curl -o /dev/null -s -L \
             -w "%{http_code} %{time_total}" \
-            --connect-timeout 10 \
-            --max-time "$((response_timeout + 5))" \
+            --connect-timeout "$connect_timeout" \
+            --max-time "$max_time" \
             "https://$domain" 2>/dev/null)
 
         status_code=$(echo "$http_output" | awk '{print $1}')
@@ -296,6 +304,19 @@ check_domain_online() {
         # Handle failed curl (empty output)
         if [[ -z "$status_code" ]] || [[ -z "$response_time" ]]; then
             log_message "WARN" "Attempt $attempt/$max_retries: Failed to connect to $domain"
+            if [[ $attempt -lt $max_retries ]]; then
+                sleep "$retry_delay"
+            fi
+            continue
+        fi
+
+        # curl reports 000 when no HTTP response was received at all (DNS failure,
+        # refused connection, dropped packets, TLS error). time_total is then only
+        # the time spent before giving up, not a response time, so this must be
+        # checked before the latency threshold below — otherwise an unreachable
+        # host is misreported as a slow one.
+        if [[ "$status_code" == "000" ]]; then
+            log_message "WARN" "Attempt $attempt/$max_retries: No response from $domain (connection failed or blocked after ${response_time}s)"
             if [[ $attempt -lt $max_retries ]]; then
                 sleep "$retry_delay"
             fi
@@ -370,7 +391,10 @@ check_ip_http() {
     local response_timeout=${3:-$DEFAULT_RESPONSE_TIMEOUT}
     local max_retries=${4:-$DEFAULT_MAX_RETRIES}
     local retry_delay=${5:-$DEFAULT_RETRY_DELAY}
-    local attempt
+    local attempt max_time connect_timeout unreachable
+    max_time=$((response_timeout + MAX_TIME_MARGIN))
+    connect_timeout=$((response_timeout + CONNECT_TIMEOUT_MARGIN))
+    unreachable=false
 
     for ((attempt = 1; attempt <= max_retries; attempt++)); do
         local http_output status_code response_time
@@ -380,8 +404,8 @@ check_ip_http() {
         # e.g. Cloudflare Origin CA certs), fall back to HTTP if HTTPS fails
         http_output=$(curl -o /dev/null -s -L -k \
             -w "%{http_code} %{time_total}" \
-            --connect-timeout 10 \
-            --max-time "$((response_timeout + 5))" \
+            --connect-timeout "$connect_timeout" \
+            --max-time "$max_time" \
             --resolve "${domain}:443:${ip}" \
             --resolve "${domain}:80:${ip}" \
             "https://$domain" 2>/dev/null)
@@ -393,8 +417,8 @@ check_ip_http() {
             log_message "INFO" "HTTPS failed for IP $ip ($domain), trying HTTP..."
             http_output=$(curl -o /dev/null -s -L \
                 -w "%{http_code} %{time_total}" \
-                --connect-timeout 10 \
-                --max-time "$((response_timeout + 5))" \
+                --connect-timeout "$connect_timeout" \
+                --max-time "$max_time" \
                 --resolve "${domain}:80:${ip}" \
                 "http://$domain" 2>/dev/null)
         fi
@@ -409,6 +433,21 @@ check_ip_http() {
             fi
             continue
         fi
+
+        # Neither HTTPS nor HTTP produced a response, so the IP never completed a
+        # request and time_total is only the time spent before giving up. Report it
+        # as unreachable instead of falling through to the latency threshold below,
+        # which would blame a blocked connection on a slow backend.
+        if [[ "$status_code" == "000" ]]; then
+            unreachable=true
+            log_message "WARN" "Attempt $attempt/$max_retries: No response from IP $ip for $domain (connection failed or blocked after ${response_time}s — check firewall/ACL on $ip)"
+            if [[ $attempt -lt $max_retries ]]; then
+                sleep "$retry_delay"
+            fi
+            continue
+        fi
+
+        unreachable=false
 
         if (( $(echo "$response_time > $response_timeout" | bc -l) )); then
             log_message "WARN" "Attempt $attempt/$max_retries: IP $ip responded in ${response_time}s for $domain (threshold: ${response_timeout}s)"
@@ -431,7 +470,11 @@ check_ip_http() {
         fi
     done
 
-    log_message "ERROR" "IP $ip failed HTTP health check for $domain after $max_retries attempts"
+    if [[ "$unreachable" == true ]]; then
+        log_message "ERROR" "IP $ip is unreachable for $domain after $max_retries attempts (connection blocked or timed out, not a slow backend)"
+    else
+        log_message "ERROR" "IP $ip failed HTTP health check for $domain after $max_retries attempts"
+    fi
     return 1
 }
 
@@ -563,7 +606,12 @@ main() {
         email=$(echo "$config" | jq -r '.email')
         api_key=$(echo "$config" | jq -r '.api_key')
         zone_id=$(echo "$config" | jq -r '.zone_id')
-        mapfile -t excluded_subdomains < <(echo "$config" | jq -r '.excluded_subdomains[]' 2>/dev/null)
+        # Read loop instead of `mapfile`, which only exists in bash >= 4.0
+        # (macOS still ships bash 3.2, so mapfile would break there)
+        excluded_subdomains=()
+        while IFS= read -r excluded_entry; do
+            [[ -n "$excluded_entry" ]] && excluded_subdomains+=("$excluded_entry")
+        done < <(echo "$config" | jq -r '.excluded_subdomains[]' 2>/dev/null)
 
         # Per-domain notification override (default: enabled unless explicitly false)
         domain_notif_enabled=$(echo "$config" | jq -r '.notifications_enabled // "true"')
