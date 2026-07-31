@@ -357,6 +357,13 @@ check_ip_online() {
     local retry_delay=${3:-$DEFAULT_RETRY_DELAY}
     local attempt
 
+    # Guard against an empty IP: probing "" wastes retries and logs nonsense
+    # such as "IP  is unreachable (ping failed)"
+    if [[ -z "$ip" ]]; then
+        log_message "WARN" "IP check skipped: no IP provided"
+        return 1
+    fi
+
     for ((attempt = 1; attempt <= max_retries; attempt++)); do
         # Check ICMP ping
         if ! ping -c 2 -W 2 "$ip" >/dev/null 2>&1; then
@@ -701,8 +708,11 @@ main() {
             fi
 
             # Diagnose the source IP: server down or backend connection issue?
+            # On the first run there is no cached IP yet, so there is nothing to diagnose
             local source_diag=""
-            if check_ip_online "$cached_ip" 1 1; then
+            if [[ -z "$cached_ip" ]]; then
+                source_diag="No previous IP recorded for $domain (first run)"
+            elif check_ip_online "$cached_ip" 1 1; then
                 source_diag="Server $cached_ip reachable (proxy up), backend connection down"
             else
                 source_diag="Server $cached_ip unreachable (proxy down)"
