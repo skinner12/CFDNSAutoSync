@@ -22,6 +22,17 @@ DEFAULT_NOTIFICATION_COOLDOWN=30
 CONNECT_TIMEOUT_MARGIN=2
 MAX_TIME_MARGIN=5
 
+# User-Agent sent by every health check.
+#
+# curl's default User-Agent combined with an absent Referer is a stock
+# bot-filter signature: reverse proxies and WAFs routinely drop that shape
+# outright (nginx `return 444`, Cloudflare challenges), and a CDN in front
+# reports the resulting empty reply as HTTP 502. The updater would then read a
+# healthy site as offline and fail over on a false positive. Identifying the
+# checker keeps it clear of those rules and makes the requests recognisable in
+# origin access logs.
+HEALTH_CHECK_USER_AGENT="CFDNSAutoSync/${VERSION} (+health-check)"
+
 # Ensure dependencies are installed
 for cmd in jq curl bc; do
     if ! command -v "$cmd" &>/dev/null; then
@@ -294,6 +305,7 @@ check_domain_online() {
         # Single curl call capturing both status code and response time
         http_output=$(curl -o /dev/null -s -L \
             -w "%{http_code} %{time_total}" \
+            -A "$HEALTH_CHECK_USER_AGENT" \
             --connect-timeout "$connect_timeout" \
             --max-time "$max_time" \
             "https://$domain" 2>/dev/null)
@@ -375,8 +387,8 @@ check_ip_online() {
         fi
 
         # Check TCP port 443 (HTTPS), fallback to port 80 (HTTP)
-        if curl -s --connect-timeout 3 --max-time 5 -o /dev/null "https://$ip" -k 2>/dev/null ||
-           curl -s --connect-timeout 3 --max-time 5 -o /dev/null "http://$ip" 2>/dev/null; then
+        if curl -s --connect-timeout 3 --max-time 5 -o /dev/null -A "$HEALTH_CHECK_USER_AGENT" "https://$ip" -k 2>/dev/null ||
+           curl -s --connect-timeout 3 --max-time 5 -o /dev/null -A "$HEALTH_CHECK_USER_AGENT" "http://$ip" 2>/dev/null; then
             log_message "INFO" "IP $ip is online (ping + port check OK)"
             return 0
         fi
@@ -411,6 +423,7 @@ check_ip_http() {
         # e.g. Cloudflare Origin CA certs), fall back to HTTP if HTTPS fails
         http_output=$(curl -o /dev/null -s -L -k \
             -w "%{http_code} %{time_total}" \
+            -A "$HEALTH_CHECK_USER_AGENT" \
             --connect-timeout "$connect_timeout" \
             --max-time "$max_time" \
             --resolve "${domain}:443:${ip}" \
@@ -424,6 +437,7 @@ check_ip_http() {
             log_message "INFO" "HTTPS failed for IP $ip ($domain), trying HTTP..."
             http_output=$(curl -o /dev/null -s -L \
                 -w "%{http_code} %{time_total}" \
+                -A "$HEALTH_CHECK_USER_AGENT" \
                 --connect-timeout "$connect_timeout" \
                 --max-time "$max_time" \
                 --resolve "${domain}:80:${ip}" \
@@ -777,21 +791,26 @@ parse_args() {
     done
 }
 
-parse_args "$@"
+# Entry point, guarded so the file can be sourced without running the updater.
+# Executing it behaves exactly as before; sourcing it (as the tests do) only
+# defines the functions, leaving argument parsing, the lock file and main alone.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    parse_args "$@"
 
-# Lock file to prevent overlapping runs
-if [[ -f "$LOCK_FILE" ]]; then
-    LOCK_PID=$(cat "$LOCK_FILE")
-    if kill -0 "$LOCK_PID" 2>/dev/null; then
-        echo "Another instance is already running (PID $LOCK_PID). Skipping."
-        exit 0
+    # Lock file to prevent overlapping runs
+    if [[ -f "$LOCK_FILE" ]]; then
+        LOCK_PID=$(cat "$LOCK_FILE")
+        if kill -0 "$LOCK_PID" 2>/dev/null; then
+            echo "Another instance is already running (PID $LOCK_PID). Skipping."
+            exit 0
+        fi
+        # Stale lock file (process no longer running), remove it
+        rm -f "$LOCK_FILE"
     fi
-    # Stale lock file (process no longer running), remove it
-    rm -f "$LOCK_FILE"
+
+    mkdir -p "$(dirname "$LOCK_FILE")"
+    echo $$ > "$LOCK_FILE"
+    trap 'rm -f "$LOCK_FILE"' EXIT
+
+    main
 fi
-
-mkdir -p "$(dirname "$LOCK_FILE")"
-echo $$ > "$LOCK_FILE"
-trap 'rm -f "$LOCK_FILE"' EXIT
-
-main
