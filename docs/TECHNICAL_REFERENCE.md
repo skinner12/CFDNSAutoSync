@@ -568,7 +568,11 @@ main
 **Per-Domain Logic** (for each domain):
 
 1. **Extract configuration fields**:
-   - Required: `domain`, `primary_ip`, `secondary_ip`, `email`, `api_key`, `zone_id`
+   - Required: `domain`, `email`, `api_key`, `zone_id`
+   - Resolved via `resolve_server_ip`: primary and secondary addresses, from
+     `primary_server`/`secondary_server`, the legacy `primary_ip`/`secondary_ip`,
+     or `defaults` (see [Server Resolution](#server-resolution)). A domain whose
+     primary or secondary does not resolve is skipped and the loop continues.
    - Optional: `excluded_subdomains`, `notifications_enabled`, `response_timeout`, `max_retries`, `retry_delay`
 
 2. **Determine cached IP**:
@@ -884,8 +888,10 @@ Array of domain configurations. Each entry represents a domain to monitor.
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `domain` | string | Yes | N/A | Base domain name (e.g., `example.com`) |
-| `primary_ip` | string | Yes | N/A | Primary IP address for failover |
-| `secondary_ip` | string | Yes | N/A | Secondary IP address for failback |
+| `primary_server` | string | No\* | `defaults.primary_server` | Name of a server defined in the top-level `servers` map |
+| `secondary_server` | string | No\* | `defaults.secondary_server` | Name of a server defined in the top-level `servers` map |
+| `primary_ip` | string | No\* | N/A | Primary IP address, written inline (legacy; prefer `primary_server`) |
+| `secondary_ip` | string | No\* | N/A | Secondary IP address, written inline (legacy; prefer `secondary_server`) |
 | `email` | string | Yes | N/A | Cloudflare account email |
 | `api_key` | string | Yes | N/A | Cloudflare API key (not token) |
 | `zone_id` | string | Yes | N/A | Cloudflare zone ID for domain |
@@ -894,6 +900,59 @@ Array of domain configurations. Each entry represents a domain to monitor.
 | `response_timeout` | integer | No | 3 | HTTP response time threshold in seconds |
 | `max_retries` | integer | No | 3 | Number of health check retries |
 | `retry_delay` | integer | No | 2 | Seconds to wait between retries |
+
+\* Each role must resolve from exactly one source. See
+[Server Resolution](#server-resolution) for the precedence order. A domain whose
+primary or secondary cannot be resolved is skipped with an `ERROR` log line.
+
+---
+
+#### Server Resolution
+
+Each physical server is declared once in the top-level `servers` map; domains
+reference it by name. Re-addressing a VPS is then a single edit, instead of one
+edit per domain per role.
+
+```json
+{
+  "servers": {
+    "vps-main": "1.1.1.1",
+    "vps-backup": "1.2.3.4"
+  },
+  "defaults": {
+    "primary_server": "vps-main",
+    "secondary_server": "vps-backup"
+  }
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `servers` | object | No | Map of server name to IPv4 address |
+| `defaults.primary_server` | string | No | Server name used as primary when a domain does not set one |
+| `defaults.secondary_server` | string | No | Server name used as secondary when a domain does not set one |
+| `defaults.primary_ip` | string | No | Literal primary address used when no name resolves |
+| `defaults.secondary_ip` | string | No | Literal secondary address used when no name resolves |
+
+**Resolution order** (`resolve_server_ip`), first match wins:
+
+1. `domain.<role>_server` → looked up in `servers`
+2. `domain.<role>_ip` → literal address (legacy format)
+3. `defaults.<role>_server` → looked up in `servers`
+4. `defaults.<role>_ip` → literal address
+
+**Notes**:
+- A `<role>_server` name absent from `servers` is an error, not a fallback: the
+  domain is skipped and the run continues with the remaining domains. This keeps
+  a typo from silently repointing a live domain at the wrong server.
+- Resolved addresses are checked by `is_valid_ipv4` before reaching the
+  Cloudflare API. Out-of-range octets and leading zeros (ambiguous between
+  decimal and octal) are rejected.
+- Errors are logged to stderr so the message is not swallowed by the caller's
+  command substitution.
+- `servers` and `defaults` are both optional. A config where every domain still
+  carries `primary_ip`/`secondary_ip` resolves through step 2 and behaves exactly
+  as it did before these keys existed.
 
 ---
 
