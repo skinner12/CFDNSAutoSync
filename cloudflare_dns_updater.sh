@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-VERSION="1.4.3"
+VERSION="1.5.0"
 
 # Configuration defaults
 CONFIG_FILE="domain.json"
@@ -60,6 +60,87 @@ log_message() {
         CRITICAL) echo -e "\033[31m\033[1m$entry\033[0m" ;;
         *)        echo "$entry" ;;
     esac
+}
+
+# ─── Server Resolution ────────────────────────────────────────
+
+# Validate an IPv4 dotted quad.
+#
+# A typo in the servers map would otherwise be written straight into a
+# Cloudflare A record and point a live domain at nothing. Leading zeros are
+# rejected too, because resolvers disagree on whether "010" is decimal or octal.
+is_valid_ipv4() {
+    local ip=$1
+    local a="" b="" c="" d="" octet
+
+    [[ "$ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]] || return 1
+
+    IFS=. read -r a b c d <<< "$ip"
+    for octet in "$a" "$b" "$c" "$d"; do
+        [[ "$octet" -le 255 ]] || return 1
+        [[ ${#octet} -eq 1 || "${octet:0:1}" != "0" ]] || return 1
+    done
+    return 0
+}
+
+# Resolve the IP a domain should use for one role ("primary" or "secondary").
+#
+# Domains name a server instead of repeating its address, so a VPS that changes
+# IP is a single edit in the top-level "servers" map rather than one edit per
+# domain. Configs written before that map existed keep working unchanged: an
+# inline primary_ip/secondary_ip is still honoured.
+#
+# Resolution order, first match wins:
+#   1. domain.<role>_server    -> servers[name]
+#   2. domain.<role>_ip        -> literal (legacy format)
+#   3. defaults.<role>_server  -> servers[name]
+#   4. defaults.<role>_ip      -> literal
+#
+# Prints the resolved IP on stdout. Failures log to stderr so the message
+# survives the caller's command substitution, and return 1. A name that does not
+# resolve is never quietly replaced by a fallback: a typo must stop the domain
+# rather than repoint it at the wrong server.
+resolve_server_ip() {
+    local role=$1 config=$2 servers=$3 defaults=$4 domain=$5
+    local name="" ip="" origin=""
+
+    name=$(printf '%s' "$config" | jq -r --arg k "${role}_server" '.[$k] // empty' 2>/dev/null)
+    if [[ -n "$name" ]]; then
+        origin="server \"$name\""
+    else
+        ip=$(printf '%s' "$config" | jq -r --arg k "${role}_ip" '.[$k] // empty' 2>/dev/null)
+        if [[ -n "$ip" ]]; then
+            origin="${role}_ip"
+        else
+            name=$(printf '%s' "$defaults" | jq -r --arg k "${role}_server" '.[$k] // empty' 2>/dev/null)
+            if [[ -n "$name" ]]; then
+                origin="default server \"$name\""
+            else
+                ip=$(printf '%s' "$defaults" | jq -r --arg k "${role}_ip" '.[$k] // empty' 2>/dev/null)
+                origin="default ${role}_ip"
+            fi
+        fi
+    fi
+
+    if [[ -n "$name" ]]; then
+        ip=$(printf '%s' "$servers" | jq -r --arg k "$name" '.[$k] // empty' 2>/dev/null)
+        if [[ -z "$ip" ]]; then
+            log_message "ERROR" "Unknown ${role} server \"$name\" for $domain: no such entry in the top-level \"servers\" map" >&2
+            return 1
+        fi
+    fi
+
+    if [[ -z "$ip" ]]; then
+        log_message "ERROR" "No ${role} IP configured for $domain: set \"${role}_server\" (or a legacy \"${role}_ip\")" >&2
+        return 1
+    fi
+
+    if ! is_valid_ipv4 "$ip"; then
+        log_message "ERROR" "Invalid ${role} IP \"$ip\" for $domain (from ${origin}): not a valid IPv4 address" >&2
+        return 1
+    fi
+
+    printf '%s' "$ip"
 }
 
 # ─── Notification Functions ───────────────────────────────────
@@ -261,12 +342,22 @@ send_notification() {
         return 0
     fi
 
-    # Check cooldown
+    # Check cooldown, except during a dry-run.
+    #
+    # A dry-run still delivers the notification, so the channel configuration can
+    # be verified end to end. It must not go through should_send_notification
+    # though: that stamps a timestamp whenever it allows a send, and a dry-run
+    # consuming the window would silently suppress the next genuine alert for
+    # this domain and event.
     local cooldown_minutes
-    cooldown_minutes=$(echo "$notif_config" | jq -r '.cooldown_minutes // empty')
-    cooldown_minutes=${cooldown_minutes:-$DEFAULT_NOTIFICATION_COOLDOWN}
-    if ! should_send_notification "$domain" "$event_type" "$cooldown_minutes"; then
-        return 0
+    if [[ "$DRY_RUN" == "true" ]]; then
+        log_message "INFO" "[DRY-RUN] Sending $event_type notification for $domain ($old_ip -> $new_ip), cooldown not consumed"
+    else
+        cooldown_minutes=$(echo "$notif_config" | jq -r '.cooldown_minutes // empty')
+        cooldown_minutes=${cooldown_minutes:-$DEFAULT_NOTIFICATION_COOLDOWN}
+        if ! should_send_notification "$domain" "$event_type" "$cooldown_minutes"; then
+            return 0
+        fi
     fi
 
     local timestamp hostname
@@ -589,7 +680,7 @@ update_cloudflare_dns() {
 main() {
     local domain primary_ip secondary_ip email api_key zone_id excluded_subdomains
     local cache_file cached_ip config response_timeout max_retries retry_delay
-    local notif_config domain_notif_enabled
+    local notif_config domain_notif_enabled servers_map config_defaults
 
     mkdir -p "$CACHE_DIR"
     mkdir -p "$(dirname "$LOG_FILE")"
@@ -607,6 +698,13 @@ main() {
     # Read global notification config (top-level "notifications" key)
     notif_config=$(jq -c '.notifications // empty' <"$CONFIG_FILE" 2>/dev/null)
 
+    # Server registry and shared defaults. Domains reference servers by name, so
+    # re-addressing a VPS is one edit here instead of one per domain. Both keys
+    # are optional: a config that still spells out primary_ip/secondary_ip per
+    # domain simply resolves through the legacy path.
+    servers_map=$(jq -c '.servers // {}' <"$CONFIG_FILE" 2>/dev/null)
+    config_defaults=$(jq -c '.defaults // {}' <"$CONFIG_FILE" 2>/dev/null)
+
     # Read domains array (supports both new object format and legacy array format)
     local configs
     if jq -e '.domains' <"$CONFIG_FILE" >/dev/null 2>&1; then
@@ -622,8 +720,16 @@ main() {
 
     echo "$configs" | while IFS= read -r config; do
         domain=$(echo "$config" | jq -r '.domain')
-        primary_ip=$(echo "$config" | jq -r '.primary_ip')
-        secondary_ip=$(echo "$config" | jq -r '.secondary_ip')
+        # A domain whose IPs cannot be resolved is skipped, not guessed at, and
+        # the run continues: one bad entry must not stop the other domains.
+        if ! primary_ip=$(resolve_server_ip "primary" "$config" "$servers_map" "$config_defaults" "$domain"); then
+            log_message "ERROR" "Skipping $domain: primary IP could not be resolved"
+            continue
+        fi
+        if ! secondary_ip=$(resolve_server_ip "secondary" "$config" "$servers_map" "$config_defaults" "$domain"); then
+            log_message "ERROR" "Skipping $domain: secondary IP could not be resolved"
+            continue
+        fi
         email=$(echo "$config" | jq -r '.email')
         api_key=$(echo "$config" | jq -r '.api_key')
         zone_id=$(echo "$config" | jq -r '.zone_id')

@@ -1,4 +1,12 @@
 {
+	"servers": {
+		"vps-main": "1.1.1.1",
+		"vps-backup": "1.2.3.4"
+	},
+	"defaults": {
+		"primary_server": "vps-main",
+		"secondary_server": "vps-backup"
+	},
 	"notifications": {
 		"enabled": true,
 		"events": ["failover", "failback", "both_offline"],
@@ -23,8 +31,6 @@
 	"domains": [
 		{
 			"domain": "domain.com",
-			"primary_ip": "1.1.1.1",
-			"secondary_ip": "1.2.3.4",
 			"email": "some_email@domain.com",
 			"api_key": "3233e2d23d23d2323d23d23d23d23d",
 			"zone_id": "d23223d23d4f1234334f34134f1134f",
@@ -37,8 +43,8 @@
 		},
 		{
 			"domain": "domain2.com",
-			"primary_ip": "1.1.1.1",
-			"secondary_ip": "1.2.3.4",
+			"primary_server": "vps-backup",
+			"secondary_server": "vps-main",
 			"email": "some_email@domain.com",
 			"api_key": "3233e2d23d23d2323d23d23d23d23d",
 			"zone_id": "d23223d23d4f1234334f34134f1134f",
@@ -46,6 +52,15 @@
 				"no-update-subdomain"
 			],
 			"notifications_enabled": false
+		},
+		{
+			"domain": "legacy-format.com",
+			"primary_ip": "1.1.1.1",
+			"secondary_ip": "1.2.3.4",
+			"email": "some_email@domain.com",
+			"api_key": "3233e2d23d23d2323d23d23d23d23d",
+			"zone_id": "d23223d23d4f1234334f34134f1134f",
+			"excluded_subdomains": []
 		}
 	]
 }

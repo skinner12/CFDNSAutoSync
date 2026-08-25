@@ -15,7 +15,7 @@ This script is designed to automate the process of updating DNS records on Cloud
 - **Failover Handling**: Switches to a secondary IP if the primary IP is offline or too slow.
 - **Notifications**: Optional alerts via Telegram, Slack, or generic Webhook on failover, failback, and critical events. Global configuration with per-domain opt-out and cooldown to prevent spam.
 - **DNS Record Validation**: Checks current DNS record content before updating, skipping records already at the target IP.
-- **Dry-Run Mode**: Simulate updates without making actual DNS changes using `--dry-run`.
+- **Dry-Run Mode**: Simulate updates using `--dry-run`. No DNS changes are made; intended changes are logged with a `[DRY-RUN]` prefix. Notifications are still delivered, so a dry-run doubles as an end-to-end check of your channel setup, but the notification cooldown is never consumed — a dry-run can't suppress a later real alert.
 - **Timestamped Logging**: All operations are logged with timestamps and severity levels (INFO/WARN/ERROR/CRITICAL) to both console and log file.
 - **Per-Domain Configuration**: Each domain can have its own response timeout, retry count, and retry delay. Notifications can be disabled per domain.
 - **Persistent Cache**: IP cache stored in `~/.cloudflare_dns_updater/cache/` (survives reboots).
@@ -32,6 +32,14 @@ Before running the script, you must configure it with your Cloudflare credential
 
 ```json
 {
+    "servers": {
+        "vps-main": "192.168.1.1",
+        "vps-backup": "192.168.1.2"
+    },
+    "defaults": {
+        "primary_server": "vps-main",
+        "secondary_server": "vps-backup"
+    },
     "notifications": {
         "enabled": true,
         "events": ["failover", "failback", "both_offline"],
@@ -56,8 +64,6 @@ Before running the script, you must configure it with your Cloudflare credential
     "domains": [
         {
             "domain": "example.com",
-            "primary_ip": "192.168.1.1",
-            "secondary_ip": "192.168.1.2",
             "email": "your-email@example.com",
             "api_key": "your-api-key",
             "zone_id": "your-zone-id",
@@ -68,8 +74,8 @@ Before running the script, you must configure it with your Cloudflare credential
         },
         {
             "domain": "example2.com",
-            "primary_ip": "10.0.0.1",
-            "secondary_ip": "10.0.0.2",
+            "primary_server": "vps-backup",
+            "secondary_server": "vps-main",
             "email": "your-email@example.com",
             "api_key": "your-api-key",
             "zone_id": "your-zone-id-2",
@@ -80,13 +86,47 @@ Before running the script, you must configure it with your Cloudflare credential
 }
 ```
 
+### Servers
+
+Define each physical server once in the top-level `servers` map, then have
+domains reference it by name. When a VPS is re-addressed you edit that one line
+instead of hunting down every `primary_ip`/`secondary_ip` in the file.
+
+`defaults` sets the primary and secondary server for every domain. A domain only
+needs its own `primary_server`/`secondary_server` when it differs — for example
+to swap the two roles, as `example2.com` does above.
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `servers` | No | Map of server name to IPv4 address, e.g. `{"vps-main": "192.168.1.1"}` |
+| `defaults.primary_server` | No | Server name used as primary by domains that do not set their own |
+| `defaults.secondary_server` | No | Server name used as secondary by domains that do not set their own |
+
+Each role is resolved in this order, first match wins:
+
+1. the domain's `primary_server` / `secondary_server` (looked up in `servers`)
+2. the domain's `primary_ip` / `secondary_ip` (legacy inline address)
+3. `defaults.primary_server` / `defaults.secondary_server`
+4. `defaults.primary_ip` / `defaults.secondary_ip`
+
+A name that is not in the `servers` map is an error, never a silent fallback:
+the domain is skipped, the run continues with the remaining domains, and the
+reason is logged. Resolved addresses are validated as IPv4 before they reach the
+Cloudflare API.
+
+**Upgrading:** the older format, where every domain spells out `primary_ip` and
+`secondary_ip`, still works exactly as before. You can deploy this version
+without touching your config and migrate whenever it suits you.
+
 ### Domain Fields
 
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
 | `domain` | Yes | - | The domain name to monitor |
-| `primary_ip` | Yes | - | Primary server IP address |
-| `secondary_ip` | Yes | - | Failover server IP address |
+| `primary_server` | No\* | `defaults.primary_server` | Name of the primary server, defined in `servers` |
+| `secondary_server` | No\* | `defaults.secondary_server` | Name of the failover server, defined in `servers` |
+| `primary_ip` | No\* | - | Primary server IP address (legacy; prefer `primary_server`) |
+| `secondary_ip` | No\* | - | Failover server IP address (legacy; prefer `secondary_server`) |
 | `email` | Yes | - | Cloudflare account email |
 | `api_key` | Yes | - | Cloudflare API key |
 | `zone_id` | Yes | - | Cloudflare zone ID |
@@ -95,6 +135,9 @@ Before running the script, you must configure it with your Cloudflare credential
 | `max_retries` | No | `3` | Number of retry attempts before declaring failure |
 | `retry_delay` | No | `2` | Seconds to wait between retries |
 | `notifications_enabled` | No | `true` | Set to `false` to disable notifications for this domain only |
+
+\* Each role needs *one* source: a server name, a legacy inline IP, or a
+matching entry under `defaults`. A domain with no primary at all is skipped.
 
 ### Notification Fields (global, all optional)
 

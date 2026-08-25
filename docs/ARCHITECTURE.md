@@ -236,6 +236,13 @@ graph TD
     CONFIG --> GLOBAL["Global Settings<br/>(top-level)"]
     CONFIG --> DOMAINS["domains Array<br/>(array of domain configs)"]
 
+    %% Server Registry
+    GLOBAL --> SERVERS["servers<br/>(optional object)<br/>name -> IPv4 address"]
+    GLOBAL --> DEFAULTS["defaults<br/>(optional object)"]
+
+    DEFAULTS --> DEF_PRIMARY["primary_server: string<br/>(server name)"]
+    DEFAULTS --> DEF_SECONDARY["secondary_server: string<br/>(server name)"]
+
     %% Global Notifications
     GLOBAL --> NOTIF["notifications<br/>(optional object)"]
 
@@ -264,8 +271,8 @@ graph TD
     DOMAINS --> DOMAIN_OBJ["Domain 1, Domain 2, ...<br/>(each is an object)"]
 
     DOMAIN_OBJ --> DOMAIN_BASIC["domain: string<br/>(e.g. example.com)"]
-    DOMAIN_OBJ --> PRIMARY["primary_ip: string<br/>(preferred backend IP)"]
-    DOMAIN_OBJ --> SECONDARY["secondary_ip: string<br/>(failover IP)"]
+    DOMAIN_OBJ --> PRIMARY["primary_server: string<br/>(name in servers map)<br/>or primary_ip (legacy)"]
+    DOMAIN_OBJ --> SECONDARY["secondary_server: string<br/>(name in servers map)<br/>or secondary_ip (legacy)"]
     DOMAIN_OBJ --> CF_AUTH["email: string<br/>api_key: string<br/>zone_id: string<br/>(Cloudflare credentials)"]
 
     DOMAIN_OBJ --> DOMAIN_OPTS["Domain Options"]
@@ -281,6 +288,8 @@ graph TD
     style TG fill:#c8e6c9
     style SLACK fill:#c8e6c9
     style WEBHOOK fill:#c8e6c9
+    style SERVERS fill:#b3e5fc
+    style DEFAULTS fill:#b3e5fc
     style DOMAINS fill:#ffe0b2
     style DOMAIN_OBJ fill:#ffe0b2
     style CF_AUTH fill:#ffccbc
@@ -291,6 +300,14 @@ graph TD
 
 ```json
 {
+  "servers": {
+    "vps-main": "192.168.1.100",
+    "vps-backup": "192.168.1.101"
+  },
+  "defaults": {
+    "primary_server": "vps-main",
+    "secondary_server": "vps-backup"
+  },
   "notifications": {
     "enabled": true,
     "events": ["failover", "failback", "both_offline"],
@@ -315,8 +332,6 @@ graph TD
   "domains": [
     {
       "domain": "example.com",
-      "primary_ip": "192.168.1.100",
-      "secondary_ip": "192.168.1.101",
       "email": "user@cloudflare.com",
       "api_key": "YOUR_API_KEY",
       "zone_id": "ZONE_ID",
