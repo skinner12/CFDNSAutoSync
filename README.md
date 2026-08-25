@@ -15,7 +15,7 @@ This script is designed to automate the process of updating DNS records on Cloud
 - **Failover Handling**: Switches to a secondary IP if the primary IP is offline or too slow.
 - **Notifications**: Optional alerts via Telegram, Slack, or generic Webhook on failover, failback, and critical events. Global configuration with per-domain opt-out and cooldown to prevent spam.
 - **DNS Record Validation**: Checks current DNS record content before updating, skipping records already at the target IP.
-- **Dry-Run Mode**: Simulate updates without making actual DNS changes using `--dry-run`.
+- **Dry-Run Mode**: Simulate updates using `--dry-run`. No DNS changes and no notifications are sent; both are logged with a `[DRY-RUN]` prefix instead. A dry-run also leaves the notification cooldown untouched, so it cannot suppress a later real alert.
 - **Timestamped Logging**: All operations are logged with timestamps and severity levels (INFO/WARN/ERROR/CRITICAL) to both console and log file.
 - **Per-Domain Configuration**: Each domain can have its own response timeout, retry count, and retry delay. Notifications can be disabled per domain.
 - **Persistent Cache**: IP cache stored in `~/.cloudflare_dns_updater/cache/` (survives reboots).

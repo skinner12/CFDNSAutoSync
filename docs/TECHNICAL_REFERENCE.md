@@ -664,7 +664,7 @@ parse_args [ARGUMENTS...]
 
 | Flag | Argument | Default | Description |
 |------|----------|---------|-------------|
-| `--dry-run` | None | false | Simulate updates without making DNS changes. Logs intended actions with "[DRY-RUN]" prefix. |
+| `--dry-run` | None | false | Simulate updates without making DNS changes and without sending notifications. Logs intended actions with "[DRY-RUN]" prefix. The notification cooldown is not consumed, so a dry-run cannot suppress a later real alert. |
 | `--config` | FILE | `domain.json` | Path to JSON configuration file. Can be absolute or relative. |
 | `--log-file` | FILE | `~/.cloudflare_dns_updater/dns_updater.log` | Path to log file. Directory created if missing. |
 | `--version` | None | N/A | Display version number and exit. |
