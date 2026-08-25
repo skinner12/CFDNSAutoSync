@@ -342,23 +342,22 @@ send_notification() {
         return 0
     fi
 
-    # Dry-run mode: report what would be sent without emitting anything.
+    # Check cooldown, except during a dry-run.
     #
-    # This must come before the cooldown check, not after. should_send_notification
-    # stamps a timestamp whenever it allows a send, so a dry-run that reached it
-    # would consume the window and silently suppress the next genuine alert for
+    # A dry-run still delivers the notification, so the channel configuration can
+    # be verified end to end. It must not go through should_send_notification
+    # though: that stamps a timestamp whenever it allows a send, and a dry-run
+    # consuming the window would silently suppress the next genuine alert for
     # this domain and event.
-    if [[ "$DRY_RUN" == "true" ]]; then
-        log_message "INFO" "[DRY-RUN] Would send $event_type notification for $domain ($old_ip -> $new_ip)"
-        return 0
-    fi
-
-    # Check cooldown
     local cooldown_minutes
-    cooldown_minutes=$(echo "$notif_config" | jq -r '.cooldown_minutes // empty')
-    cooldown_minutes=${cooldown_minutes:-$DEFAULT_NOTIFICATION_COOLDOWN}
-    if ! should_send_notification "$domain" "$event_type" "$cooldown_minutes"; then
-        return 0
+    if [[ "$DRY_RUN" == "true" ]]; then
+        log_message "INFO" "[DRY-RUN] Sending $event_type notification for $domain ($old_ip -> $new_ip), cooldown not consumed"
+    else
+        cooldown_minutes=$(echo "$notif_config" | jq -r '.cooldown_minutes // empty')
+        cooldown_minutes=${cooldown_minutes:-$DEFAULT_NOTIFICATION_COOLDOWN}
+        if ! should_send_notification "$domain" "$event_type" "$cooldown_minutes"; then
+            return 0
+        fi
     fi
 
     local timestamp hostname

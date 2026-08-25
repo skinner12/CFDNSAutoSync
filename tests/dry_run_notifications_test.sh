@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 #
-# Verifies that --dry-run suppresses notifications and does not consume the
+# Verifies that --dry-run still delivers notifications but never consumes the
 # notification cooldown.
 #
 # Background: the dry-run guard only ever wrapped the DNS write inside
 # update_cloudflare_dns, so send_notification ran unconditionally. A dry-run
-# against a live config fired nine real Telegram alerts. Worse, each one wrote a
-# cooldown timestamp, which would have silently suppressed a genuine failover
-# alert for the next 30 minutes. A dry-run must observe, never emit.
+# against a live config fired nine real Telegram alerts. The alerts themselves
+# are wanted — they let a dry-run verify the channel configuration end to end —
+# but each one also wrote a cooldown timestamp, which would have silently
+# suppressed a genuine failover alert for the next 30 minutes. Delivering
+# without stamping the cooldown keeps the visibility and removes the hazard.
 #
 # Usage: bash tests/dry_run_notifications_test.sh
 
@@ -65,21 +67,23 @@ reset_state() {
     rm -rf "$NOTIFICATION_CACHE_DIR"
 }
 
-# ─── 1. A dry-run emits nothing ──────────────────────────────────────────────
+# ─── 1. A dry-run still delivers ─────────────────────────────────────────────
 
-printf 'Dry-run suppresses notifications\n'
+printf 'Dry-run still delivers notifications\n'
 
 reset_state
 DRY_RUN=true
 send_notification "$NOTIF_CONFIG" "true" "both_offline" "example.test" \
     "203.0.113.10" "198.51.100.20" "stubbed reason" >/dev/null 2>&1
 
-if [[ -s "$SENT_LOG" ]]; then
-    fail "no channel is dispatched during a dry-run" \
-         "dispatched: $(tr '\n' ' ' < "$SENT_LOG")"
-else
-    pass "no channel is dispatched during a dry-run"
-fi
+for channel in telegram slack webhook; do
+    if grep -q "^${channel} " "$SENT_LOG"; then
+        pass "$channel is dispatched during a dry-run"
+    else
+        fail "$channel is dispatched during a dry-run" \
+             "no $channel dispatch recorded"
+    fi
+done
 
 # ─── 2. A dry-run does not consume the cooldown ──────────────────────────────
 #
@@ -151,10 +155,32 @@ send_notification "$NOTIF_CONFIG" "true" "failback" "example.test" \
     "198.51.100.20" "203.0.113.10" "stubbed reason" >/dev/null 2>&1
 
 if grep -q 'DRY-RUN' "$LOG_FILE" && grep -q 'failback' "$LOG_FILE"; then
-    pass "the suppressed notification is logged as a dry-run"
+    pass "the dispatch is marked as a dry-run in the log"
 else
-    fail "the suppressed notification is logged as a dry-run" \
-         "log did not record the suppressed failback notification"
+    fail "the dispatch is marked as a dry-run in the log" \
+         "log did not record the failback notification as a dry-run"
+fi
+
+# Repeated dry-runs must never start consuming the cooldown, however many run.
+reset_state
+DRY_RUN=true
+for _ in 1 2 3; do
+    send_notification "$NOTIF_CONFIG" "true" "failover" "example.test" \
+        "203.0.113.10" "198.51.100.20" "stubbed reason" >/dev/null 2>&1
+done
+
+if [[ "$(ls "$NOTIFICATION_CACHE_DIR" 2>/dev/null | wc -l | tr -d ' ')" -eq 0 ]]; then
+    pass "repeated dry-runs never stamp the cooldown"
+else
+    fail "repeated dry-runs never stamp the cooldown" \
+         "cooldown files present: $(ls "$NOTIFICATION_CACHE_DIR" | tr '\n' ' ')"
+fi
+
+if [[ "$(grep -c '^telegram ' "$SENT_LOG")" -eq 3 ]]; then
+    pass "every dry-run in a row is delivered, none suppressed"
+else
+    fail "every dry-run in a row is delivered, none suppressed" \
+         "expected 3 telegram dispatches, got $(grep -c '^telegram ' "$SENT_LOG")"
 fi
 
 # Leave the sourced script's state as we found it. Read by send_notification in

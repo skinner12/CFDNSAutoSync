@@ -72,7 +72,7 @@ resolver.
 - **Output:** identical for all 9 domains; `0` unresolved in either.
 - **Guaranteed:** migrating the production config is a no-op for DNS behaviour.
 
-### 4. Dry-run must not emit notifications
+### 4. Dry-run must not consume the notification cooldown
 
 Found while dry-running the migrated config against the live setup: `--dry-run`
 only guarded the DNS write inside `update_cloudflare_dns`, so `send_notification`
@@ -80,24 +80,27 @@ ran unconditionally and sent nine real Telegram alerts. Each also stamped a
 cooldown timestamp, which would have suppressed the next genuine alert for that
 domain and event for 30 minutes.
 
+The alerts themselves are wanted — they make a dry-run an end-to-end check of the
+channel configuration — so the chosen behaviour is *deliver, but never stamp the
+cooldown*. Two RED/GREEN cycles ran here: the first suppressed notifications
+entirely, then the requirement was refined to keep delivery and drop only the
+cooldown side effect.
+
 - **Validation command:** `bash tests/dry_run_notifications_test.sh`
-- **RED:** `8 run, 4 failed`
+- **RED (final requirement):** `12 run, 4 failed`
 
   ```
-  FAIL    no channel is dispatched during a dry-run
-            dispatched: telegram both_offline example.test slack ... webhook ...
-  FAIL    a dry-run does not write a cooldown timestamp
-            cooldown file was created, so a later real alert would be suppressed
-  FAIL    a real alert after a dry-run is still delivered
-            nothing dispatched: the dry-run consumed the cooldown
+  FAIL    telegram is dispatched during a dry-run
+            no telegram dispatch recorded
+  FAIL    every dry-run in a row is delivered, none suppressed
+            expected 3 telegram dispatches, got 0
   ```
 
-- **GREEN:** `8 run, 0 failed`
-- **Live re-verification:** re-running the identical dry-run against the migrated
-  config now reports `0` notifications sent, `9` suppressed, `0` cooldown files.
-- **Guaranteed:** a dry-run emits nothing on any channel and leaves the cooldown
-  untouched, while normal (non-dry-run) dispatch and the per-domain opt-out are
-  unchanged.
+- **GREEN:** `12 run, 0 failed`
+- **Guaranteed:** a dry-run delivers on every enabled channel, never writes a
+  cooldown file however many times it runs, and a genuine alert immediately
+  afterwards is still delivered. Non-dry-run dispatch, the cooldown itself, and
+  the per-domain opt-out are unchanged.
 
 **Note on the alert content:** the `both_offline` conclusions in that run were a
 false positive, not an outage. Direct-IP health checks returned HTTP 403 in
@@ -140,12 +143,14 @@ Run dry-runs from a whitelisted host for meaningful health results.
 | 21 | A domain naming an unknown server is skipped | `…:a domain naming an unknown server is skipped` | integration | PASS |
 | 22 | One bad entry does not stop the remaining domains | `…:one bad entry does not stop the remaining domains` | integration | PASS |
 | 23 | Health checks still send the identifying User-Agent | `health_check_user_agent_test.sh` (3 assertions) | integration + e2e | PASS |
-| 24 | No channel is dispatched during a dry-run | `dry_run_notifications_test.sh:no channel is dispatched during a dry-run` | unit | PASS |
+| 24 | Telegram/Slack/webhook are dispatched during a dry-run | `dry_run_notifications_test.sh:{telegram,slack,webhook} is dispatched during a dry-run` | unit | PASS |
 | 25 | A dry-run does not write a cooldown timestamp | `…:a dry-run does not write a cooldown timestamp` | unit | PASS |
 | 26 | A real alert after a dry-run is still delivered | `…:a real alert after a dry-run is still delivered` | unit | PASS |
 | 27 | Telegram/Slack/webhook dispatch when not in dry-run | `…:{telegram,slack,webhook} is dispatched when not in dry-run` | unit | PASS |
 | 28 | A domain opted out still sends nothing | `…:a domain opted out still sends nothing` | unit | PASS |
-| 29 | The suppressed notification is logged as a dry-run | `…:the suppressed notification is logged as a dry-run` | unit | PASS |
+| 29 | The dispatch is marked as a dry-run in the log | `…:the dispatch is marked as a dry-run in the log` | unit | PASS |
+| 30 | Repeated dry-runs never stamp the cooldown | `…:repeated dry-runs never stamp the cooldown` | unit | PASS |
+| 31 | Every dry-run in a row is delivered, none suppressed | `…:every dry-run in a row is delivered, none suppressed` | unit | PASS |
 
 Integration cases 18–22 drive `main()` end to end against a synthetic config
 with the network-facing functions stubbed, so they cover the per-domain subshell
@@ -182,5 +187,7 @@ If the three checkpoint commits are squashed, this is the record:
   `22 run, 0 failed`, existing suite `3 run, 0 failed`, shellcheck clean.
 - `180b408` — docs: README, CLAUDE.md, ARCHITECTURE, TECHNICAL_REFERENCE and
   `domain.json.example` updated for the new format.
-- `ce6cf82` — RED/GREEN: `--dry-run` no longer sends notifications or consumes
-  the notification cooldown. `8 run, 4 failed` → `8 run, 0 failed`.
+- `ce6cf82` — RED/GREEN: first cut, `--dry-run` suppressed notifications
+  entirely. `8 run, 4 failed` → `8 run, 0 failed`.
+- final commit — RED/GREEN: requirement refined to keep delivery and drop only
+  the cooldown side effect. `12 run, 4 failed` → `12 run, 0 failed`.
